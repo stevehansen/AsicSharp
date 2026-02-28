@@ -2,7 +2,9 @@ using AsicSharp.Configuration;
 using AsicSharp.Extensions;
 using AsicSharp.Services;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace AsicSharp.Tests;
@@ -48,5 +50,28 @@ public class DependencyInjectionTests
         // ITsaClient should be resolvable (backed by typed HttpClient)
         var tsaClient = provider.GetRequiredService<ITsaClient>();
         tsaClient.Should().BeOfType<TsaClient>();
+    }
+
+    [Fact]
+    public void AddAsicSharp_WithConfigurationSection_ShouldBindOptions()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AsicTimestamp:TimestampAuthorityUrl"] = WellKnownTsa.Sectigo,
+                ["AsicTimestamp:UseNonce"] = "false",
+                ["AsicTimestamp:RequestSignerCertificates"] = "false"
+            })
+            .Build();
+
+        var services = new ServiceCollection();
+        services.AddAsicSharp(config.GetSection(AsicTimestampOptions.SectionName));
+
+        using var provider = services.BuildServiceProvider();
+
+        var options = provider.GetRequiredService<IOptions<AsicTimestampOptions>>().Value;
+        options.TimestampAuthorityUrl.Should().Be(WellKnownTsa.Sectigo);
+        options.UseNonce.Should().BeFalse();
+        options.RequestSignerCertificates.Should().BeFalse();
     }
 }

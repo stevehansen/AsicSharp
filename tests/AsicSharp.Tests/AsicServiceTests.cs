@@ -715,6 +715,445 @@ public class AsicServiceTests
 
     #endregion
 
+    #region Stream and file-based creation
+
+    [Fact]
+    public async Task CreateAsync_StreamOverload_ShouldProduceValidContainer()
+    {
+        // Arrange
+        var data = Encoding.UTF8.GetBytes("Stream data");
+        SetupMockTsa();
+
+        // Act
+        using var stream = new MemoryStream(data);
+        var result = await _service.CreateAsync(stream, "stream-test.txt");
+
+        // Assert
+        result.ContainerBytes.Should().NotBeNullOrEmpty();
+        var (fileName, extractedData) = _service.Extract(result.ContainerBytes);
+        fileName.Should().Be("stream-test.txt");
+        extractedData.Should().BeEquivalentTo(data);
+    }
+
+    [Fact]
+    public async Task CreateAsync_WithNullData_ShouldThrow()
+    {
+        var act = () => _service.CreateAsync((byte[])null!, "test.txt");
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task CreateAsync_WithNullFileName_ShouldThrow()
+    {
+        var act = () => _service.CreateAsync(new byte[] { 1 }, null!);
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task CreateFromFileAsync_HappyPath_ShouldCreateContainer()
+    {
+        // Arrange
+        SetupMockTsa();
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            var data = Encoding.UTF8.GetBytes("File content for testing");
+            File.WriteAllBytes(tempFile, data);
+
+            // Act
+            var result = await _service.CreateFromFileAsync(tempFile);
+
+            // Assert
+            result.ContainerBytes.Should().NotBeNullOrEmpty();
+            var (_, extractedData) = _service.Extract(result.ContainerBytes);
+            extractedData.Should().BeEquivalentTo(data);
+        }
+        finally
+        {
+            File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task CreateFromFileAsync_MissingFile_ShouldThrowFileNotFoundException()
+    {
+        var act = () => _service.CreateFromFileAsync("/nonexistent/path/ghost.txt");
+        await act.Should().ThrowAsync<FileNotFoundException>();
+    }
+
+    [Fact]
+    public async Task CreateExtendedFromFilesAsync_MissingFile_ShouldThrowFileNotFoundException()
+    {
+        string[] paths = ["/nonexistent/ghost.pdf"];
+        var act = () => _service.CreateExtendedFromFilesAsync(paths);
+        await act.Should().ThrowAsync<FileNotFoundException>();
+    }
+
+    #endregion
+
+    #region VerifyFile and RenewFile
+
+    [Fact]
+    public async Task VerifyFile_HappyPath_ShouldReturnResult()
+    {
+        // Arrange
+        SetupMockTsa();
+        var data = Encoding.UTF8.GetBytes("Verify file content");
+        var createResult = await _service.CreateAsync(data, "doc.txt");
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(tempFile, createResult.ContainerBytes);
+
+            // Act
+            var result = _service.VerifyFile(tempFile);
+
+            // Assert
+            result.Steps.Should().NotBeEmpty();
+            result.FileName.Should().Be("doc.txt");
+        }
+        finally
+        {
+            File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void VerifyFile_MissingFile_ShouldThrowFileNotFoundException()
+    {
+        var act = () => _service.VerifyFile("/nonexistent/container.asics");
+        act.Should().Throw<FileNotFoundException>();
+    }
+
+    [Fact]
+    public async Task RenewFileAsync_HappyPath_ShouldReturnResult()
+    {
+        // Arrange
+        SetupMockTsa();
+        var data = Encoding.UTF8.GetBytes("Renew file content");
+        var createResult = await _service.CreateAsync(data, "doc.txt");
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(tempFile, createResult.ContainerBytes);
+
+            // Act
+            var result = await _service.RenewFileAsync(tempFile);
+
+            // Assert
+            result.ContainerBytes.Should().NotBeNullOrEmpty();
+            result.Timestamp.Should().NotBe(default);
+        }
+        finally
+        {
+            File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task RenewFileAsync_MissingFile_ShouldThrowFileNotFoundException()
+    {
+        var act = () => _service.RenewFileAsync("/nonexistent/container.asics");
+        await act.Should().ThrowAsync<FileNotFoundException>();
+    }
+
+    #endregion
+
+    #region Verification edge cases
+
+    [Fact]
+    public void Verify_MissingMimetypeEntry_ShouldReturnFailedMimeStep()
+    {
+        // Build a ZIP without a mimetype entry
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var dataEntry = zip.CreateEntry("test.txt", CompressionLevel.Optimal);
+            using (var stream = dataEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("some data"));
+
+            var tsEntry = zip.CreateEntry("META-INF/timestamp.tst", CompressionLevel.Optimal);
+            using (var stream = tsEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("FAKE_TOKEN"));
+        }
+
+        var result = _service.Verify(ms.ToArray());
+
+        var mimeStep = result.Steps.FirstOrDefault(s => s.Name == "MIME type");
+        mimeStep.Should().NotBeNull();
+        mimeStep!.Passed.Should().BeFalse();
+        mimeStep.Detail.Should().Contain("Missing");
+    }
+
+    [Fact]
+    public void Verify_WrongMimetypeContent_ShouldReturnFailedMimeStep()
+    {
+        // Build a ZIP with wrong mimetype content
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(mimeEntry.Open(), Encoding.UTF8))
+                writer.Write("application/zip");
+
+            var dataEntry = zip.CreateEntry("test.txt", CompressionLevel.Optimal);
+            using (var stream = dataEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("some data"));
+
+            var tsEntry = zip.CreateEntry("META-INF/timestamp.tst", CompressionLevel.Optimal);
+            using (var stream = tsEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("FAKE_TOKEN"));
+        }
+
+        var result = _service.Verify(ms.ToArray());
+
+        var mimeStep = result.Steps.FirstOrDefault(s => s.Name == "MIME type");
+        mimeStep.Should().NotBeNull();
+        mimeStep!.Passed.Should().BeFalse();
+        mimeStep.Detail.Should().Contain("Unexpected");
+    }
+
+    [Fact]
+    public void Verify_NoDataFile_ShouldReturnInvalid()
+    {
+        // Build a container with mimetype and timestamp but no data file
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(mimeEntry.Open(), Encoding.UTF8))
+                writer.Write("application/vnd.etsi.asic-s+zip");
+
+            var tsEntry = zip.CreateEntry("META-INF/timestamp.tst", CompressionLevel.Optimal);
+            using (var stream = tsEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("FAKE_TOKEN"));
+        }
+
+        var result = _service.Verify(ms.ToArray());
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("No data file");
+    }
+
+    [Fact]
+    public async Task Verify_RenewedContainer_TimestampChainShouldBePopulated()
+    {
+        // Arrange — create and renew
+        var data = Encoding.UTF8.GetBytes("Chain test");
+        SetupMockTsa();
+        var createResult = await _service.CreateAsync(data, "test.txt");
+        var renewResult = await _service.RenewAsync(createResult.ContainerBytes);
+
+        // Act
+        var verifyResult = _service.Verify(renewResult.ContainerBytes);
+
+        // Assert
+        verifyResult.TimestampChain.Should().NotBeNull();
+        verifyResult.TimestampChain.Should().HaveCount(2);
+        verifyResult.TimestampChain![0].Order.Should().Be(1);
+        verifyResult.TimestampChain[1].Order.Should().Be(2);
+    }
+
+    #endregion
+
+    #region ASiC-E verification edge cases
+
+    [Fact]
+    public async Task Verify_AsicE_TamperedDataFile_ShouldFailDigestStep()
+    {
+        // Arrange — create a valid ASiC-E then tamper with a data file
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("file1.txt", Encoding.UTF8.GetBytes("Original content"))
+        };
+        SetupMockTsa();
+        var createResult = await _service.CreateExtendedAsync(files);
+
+        var tamperedBytes = TamperDataFileInContainer(createResult.ContainerBytes, "file1.txt", "Tampered content");
+
+        // Act
+        var result = _service.Verify(tamperedBytes);
+
+        // Assert
+        result.IsValid.Should().BeFalse();
+        var digestStep = result.Steps.FirstOrDefault(s => s.Name.Contains("file1.txt"));
+        digestStep.Should().NotBeNull();
+        digestStep!.Passed.Should().BeFalse();
+        digestStep.Detail.Should().Contain("mismatch");
+    }
+
+    [Fact]
+    public void Verify_AsicE_MissingManifest_ShouldReturnInvalid()
+    {
+        // Build an ASiC-E container (by mimetype) but without an ASiCManifest.xml
+        var noBom = new UTF8Encoding(false);
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(mimeEntry.Open(), noBom))
+                writer.Write("application/vnd.etsi.asic-e+zip");
+
+            var dataEntry = zip.CreateEntry("doc.txt", CompressionLevel.Optimal);
+            using (var stream = dataEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("some data"));
+
+            var tsEntry = zip.CreateEntry("META-INF/timestamp.tst", CompressionLevel.Optimal);
+            using (var stream = tsEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("FAKE_TOKEN"));
+        }
+
+        var result = _service.Verify(ms.ToArray());
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("ASiCManifest");
+    }
+
+    [Fact]
+    public void Verify_AsicE_MalformedManifestXml_ShouldReturnInvalid()
+    {
+        // Build an ASiC-E container with invalid XML in the manifest
+        var noBom = new UTF8Encoding(false);
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(mimeEntry.Open(), noBom))
+                writer.Write("application/vnd.etsi.asic-e+zip");
+
+            var dataEntry = zip.CreateEntry("doc.txt", CompressionLevel.Optimal);
+            using (var stream = dataEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("some data"));
+
+            var manifestEntry = zip.CreateEntry("META-INF/ASiCManifest.xml", CompressionLevel.Optimal);
+            using (var writer = new StreamWriter(manifestEntry.Open(), noBom))
+                writer.Write("<<< not valid XML >>>");
+
+            var tsEntry = zip.CreateEntry("META-INF/timestamp.tst", CompressionLevel.Optimal);
+            using (var stream = tsEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("FAKE_TOKEN"));
+        }
+
+        var result = _service.Verify(ms.ToArray());
+
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("Invalid ASiCManifest XML");
+    }
+
+    [Fact]
+    public void Verify_AsicE_MissingReferencedFile_ShouldReturnInvalid()
+    {
+        // Build an ASiC-E container with a manifest that references a non-existent file
+        var ns = "http://uri.etsi.org/02918/v1.2.1#";
+        var manifestXml = $@"<?xml version=""1.0"" encoding=""utf-8""?>
+<ASiCManifest xmlns=""{ns}"">
+  <SigReference URI=""META-INF/timestamp.tst"" MimeType=""application/vnd.etsi.timestamp-token"" />
+  <DataObjectReference URI=""ghost.pdf"" MimeType=""application/pdf"">
+    <DigestMethod Algorithm=""http://www.w3.org/2001/04/xmlenc#sha256"" />
+    <DigestValue>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</DigestValue>
+  </DataObjectReference>
+</ASiCManifest>";
+        var noBom = new UTF8Encoding(false);
+
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(mimeEntry.Open(), noBom))
+                writer.Write("application/vnd.etsi.asic-e+zip");
+
+            var manifestEntry = zip.CreateEntry("META-INF/ASiCManifest.xml", CompressionLevel.Optimal);
+            using (var writer = new StreamWriter(manifestEntry.Open(), noBom))
+                writer.Write(manifestXml);
+
+            var tsEntry = zip.CreateEntry("META-INF/timestamp.tst", CompressionLevel.Optimal);
+            using (var stream = tsEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("FAKE_TOKEN"));
+        }
+
+        var result = _service.Verify(ms.ToArray());
+
+        result.IsValid.Should().BeFalse();
+        var ghostStep = result.Steps.FirstOrDefault(s => s.Detail != null && s.Detail.Contains("ghost.pdf"));
+        ghostStep.Should().NotBeNull();
+        ghostStep!.Passed.Should().BeFalse();
+        ghostStep.Detail.Should().Contain("not found in container");
+    }
+
+    #endregion
+
+    #region CreateExtendedFromFilesAsync + Extract on ASiC-E
+
+    [Fact]
+    public async Task CreateExtendedFromFilesAsync_HappyPath_ShouldCreateContainer()
+    {
+        SetupMockTsa();
+        var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var file1 = Path.Combine(tempDir, "a.txt");
+            var file2 = Path.Combine(tempDir, "b.pdf");
+            File.WriteAllText(file1, "File A content");
+            File.WriteAllBytes(file2, new byte[] { 1, 2, 3 });
+
+            // Act
+            var result = await _service.CreateExtendedFromFilesAsync(new[] { file1, file2 });
+
+            // Assert
+            result.ContainerBytes.Should().NotBeNullOrEmpty();
+            var extracted = _service.ExtractAll(result.ContainerBytes);
+            extracted.Should().HaveCount(2);
+            extracted.Select(e => e.FileName).Should().BeEquivalentTo(["a.txt", "b.pdf"]);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Extract_OnAsicEContainer_ShouldReturnFirstDataFile()
+    {
+        // Arrange
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("first.txt", Encoding.UTF8.GetBytes("First")),
+            ("second.txt", Encoding.UTF8.GetBytes("Second"))
+        };
+        SetupMockTsa();
+        var result = await _service.CreateExtendedAsync(files);
+
+        // Act — Extract returns only the first data file for ASiC-E
+        var (fileName, data) = _service.Extract(result.ContainerBytes);
+
+        // Assert
+        fileName.Should().Be("first.txt");
+        data.Should().BeEquivalentTo(Encoding.UTF8.GetBytes("First"));
+    }
+
+    [Fact]
+    public async Task RenewAsync_OnAsicEContainer_ShouldAddArchiveTimestamp()
+    {
+        // Arrange
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("doc.txt", Encoding.UTF8.GetBytes("Extended renewal"))
+        };
+        SetupMockTsa();
+        var createResult = await _service.CreateExtendedAsync(files);
+
+        // Act
+        var renewResult = await _service.RenewAsync(createResult.ContainerBytes);
+
+        // Assert
+        using var zip = new ZipArchive(new MemoryStream(renewResult.ContainerBytes), ZipArchiveMode.Read);
+        zip.GetEntry("META-INF/timestamp.tst").Should().NotBeNull();
+        zip.GetEntry("META-INF/timestamp-002.tst").Should().NotBeNull();
+    }
+
+    #endregion
+
     private void SetupMockTsa()
     {
         _mockTsa.RequestTimestampAsync(
@@ -737,5 +1176,35 @@ public class AsicServiceTests
         // This is a minimal DER-encoded structure, not a real timestamp.
         // Real integration tests should hit an actual TSA.
         return Encoding.UTF8.GetBytes("FAKE_TIMESTAMP_TOKEN_FOR_STRUCTURE_TESTS");
+    }
+
+    private static byte[] TamperDataFileInContainer(byte[] containerBytes, string fileName, string newContent)
+    {
+        using var inputMs = new MemoryStream(containerBytes);
+        using var inputZip = new ZipArchive(inputMs, ZipArchiveMode.Read);
+
+        using var outputMs = new MemoryStream();
+        using (var outputZip = new ZipArchive(outputMs, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            foreach (var entry in inputZip.Entries)
+            {
+                var newEntry = outputZip.CreateEntry(entry.FullName,
+                    entry.FullName == "mimetype" ? CompressionLevel.NoCompression : CompressionLevel.Optimal);
+
+                using var entryStream = newEntry.Open();
+                if (entry.FullName == fileName)
+                {
+                    // Replace with tampered content
+                    entryStream.Write(Encoding.UTF8.GetBytes(newContent));
+                }
+                else
+                {
+                    using var originalStream = entry.Open();
+                    originalStream.CopyTo(entryStream);
+                }
+            }
+        }
+
+        return outputMs.ToArray();
     }
 }
