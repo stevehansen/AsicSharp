@@ -90,9 +90,18 @@ public sealed class TsaClient : ITsaClient
             _options.TimestampAuthorityUrl, hashAlgorithm.Name);
 
         // Build the RFC 3161 timestamp request
+        ReadOnlyMemory<byte>? nonce = null;
+        if (_options.UseNonce)
+        {
+            var nonceBytes = new byte[8];
+            RandomNumberGenerator.Fill(nonceBytes);
+            nonce = nonceBytes;
+        }
+
         var tsRequest = Rfc3161TimestampRequest.CreateFromHash(
             hash,
             hashAlgorithm,
+            nonce: nonce,
             requestSignerCertificates: _options.RequestSignerCertificates);
 
         var requestBytes = tsRequest.Encode();

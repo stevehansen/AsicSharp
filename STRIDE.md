@@ -1,6 +1,6 @@
 # AsicSharp - STRIDE Threat Model
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** 2026-02-28
 **Next Review:** 2029-02-28
 
@@ -102,16 +102,18 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Asso
 
 | ID | Threat | Attack Path | Likelihood | Impact | Score | Mitigation |
 |----|--------|-------------|------------|--------|-------|------------|
-| T-1 | ZIP path traversal on extract | Malicious ASiC-S container contains ZIP entry with `../` in filename; CLI `extract` writes to arbitrary path | 2 (Low) | 4 (Critical) | **8** | `ValidateFileName()` enforces path safety on **creation** but is not applied during **extraction**. CLI uses `Path.Combine(outputDir, fileName)` with unsanitized entry name. |
+| T-1 | ZIP path traversal on extract | Malicious ASiC-S container contains ZIP entry with `../` in filename; CLI `extract` writes to arbitrary path | 1 (Very Low) | 4 (Critical) | 4 | **Mitigated.** `Extract()` and `Verify()` apply `Path.GetFileName()` to strip directory components from ZIP entry names. Fixed in [#1](https://github.com/stevehansen/AsicSharp/issues/1). |
 | T-2 | Data tampering in container | Attacker modifies data inside an ASiC-S container | 2 (Low) | 3 (High) | 6 | Verification detects hash mismatch. Timestamp token binds to original data hash. |
-| T-3 | Nonce not implemented | `UseNonce` option is defined but not passed to `Rfc3161TimestampRequest.CreateFromHash` — replay of timestamp tokens possible | 2 (Low) | 2 (Medium) | 4 | Replay risk is low: tokens are bound to a specific data hash. Replaying a token for different data fails hash verification. |
+| T-3 | Timestamp replay | Attacker replays a previously captured timestamp token | 1 (Very Low) | 2 (Medium) | 2 | **Mitigated.** `TsaClient` generates a random 8-byte nonce when `UseNonce` is true (default). `ProcessResponse` validates the nonce in the TSA response. Tokens are also bound to a specific data hash. |
 | T-4 | TSA response interception (HTTP) | TSA URLs use HTTP; MITM could intercept and modify responses | 1 (Very Low) | 3 (High) | 3 | RFC 3161 TSA responses are cryptographically signed — a modified response fails `ProcessResponse` validation regardless of transport. HTTP is standard for TSAs (security is in the signature, not the transport). |
 
 **Countermeasures in place:**
 - SHA-256 hash binding between data and timestamp token
 - Cryptographic signature verification on timestamp tokens
 - `ValidateFileName()` prevents path separators in filenames during creation
-- `Rfc3161TimestampRequest.ProcessResponse` validates response integrity
+- `Path.GetFileName()` sanitizes ZIP entry names during extraction and verification
+- Random nonce included in timestamp requests (replay protection)
+- `Rfc3161TimestampRequest.ProcessResponse` validates response integrity and nonce
 
 ### R — Repudiation
 
@@ -157,13 +159,14 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Asso
 
 | ID | Threat | Attack Path | Likelihood | Impact | Score | Mitigation |
 |----|--------|-------------|------------|--------|-------|------------|
-| E-1 | Arbitrary file write via extract | Malicious ZIP entry name with path traversal sequences causes file overwrite outside output directory | 2 (Low) | 4 (Critical) | **8** | Same as T-1. `Extract()` returns unsanitized `FullName` from ZIP entry. CLI writes directly to `Path.Combine(outputDir, fileName)`. |
+| E-1 | Arbitrary file write via extract | Malicious ZIP entry name with path traversal sequences causes file overwrite outside output directory | 1 (Very Low) | 4 (Critical) | 4 | **Mitigated.** Same fix as T-1 — `Extract()` and `Verify()` sanitize entry names via `Path.GetFileName()`. Fixed in [#1](https://github.com/stevehansen/AsicSharp/issues/1). |
 | E-2 | Signing certificate misuse | Compromised signing certificate used to create fraudulent signed containers | 1 (Very Low) | 3 (High) | 3 | Certificate management is the caller's responsibility. Library does not store or manage certificates. |
 
 **Countermeasures in place:**
 - Library runs with caller's privileges (no elevation)
 - No network listeners or server components
 - File system access limited to caller-specified paths
+- ZIP entry names sanitized with `Path.GetFileName()` on extraction
 
 ---
 
@@ -171,10 +174,12 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Asso
 
 ### High Priority Threats (Score >= 8)
 
-| ID | Threat | Score | Status |
-|----|--------|-------|--------|
-| **T-1** | ZIP path traversal on extract | 8 | Requires mitigation — sanitize extracted filenames |
-| **E-1** | Arbitrary file write via extract | 8 | Same root cause as T-1 |
+None — all previously high-priority threats have been mitigated.
+
+| ID | Threat | Original Score | Current Score | Status |
+|----|--------|---------------|---------------|--------|
+| **T-1** | ZIP path traversal on extract | 8 | 4 | Mitigated — `Path.GetFileName()` sanitization ([#1](https://github.com/stevehansen/AsicSharp/issues/1)) |
+| **E-1** | Arbitrary file write via extract | 8 | 4 | Mitigated — same fix as T-1 |
 
 ### Residual Risks
 
@@ -182,7 +187,6 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Asso
 |------|----------|-----------|
 | TSA operational security | Medium | Library trusts TSA certificate chain; TSA compromise is outside scope |
 | SHA-1 backward compatibility | Low | Supported for legacy TSA tokens; SHA-256 is the default and recommended |
-| Nonce not implemented | Low | `UseNonce` option exists but is not wired to timestamp requests; replay risk is mitigated by hash binding |
 | HTTP transport for TSA | Low | Standard practice — RFC 3161 security relies on cryptographic signatures, not transport |
 
 ---
@@ -191,8 +195,8 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Asso
 
 | Category | Implementation |
 |----------|---------------|
-| **Cryptography** | SHA-256/384/512 via .NET APIs; RFC 3161 timestamp tokens; CMS/CAdES detached signatures |
-| **Input Validation** | `ValidateFileName()` on creation; null/empty checks on all public APIs; file existence checks |
+| **Cryptography** | SHA-256/384/512 via .NET APIs; RFC 3161 timestamp tokens with nonce replay protection; CMS/CAdES detached signatures |
+| **Input Validation** | `ValidateFileName()` on creation; `Path.GetFileName()` on extraction; null/empty checks on all public APIs; file existence checks |
 | **Certificate Validation** | `Rfc3161TimestampToken.VerifySignatureForHash`; `SignedCms.CheckSignature` with chain validation |
 | **Error Handling** | Custom exception hierarchy (`AsicTimestampException` → specific subtypes); structured logging |
 | **Transport** | HttpClient with configurable timeout; TSA response validation independent of transport |
@@ -206,6 +210,7 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Asso
 | Version | Date | Reviewer | Changes |
 |---------|------|----------|---------|
 | 1.0 | 2026-02-28 | Initial analysis | Initial STRIDE threat model |
+| 1.1 | 2026-02-28 | Post-fix update | T-1/E-1 mitigated (path traversal fix); T-3 mitigated (nonce support implemented) |
 
 ---
 
