@@ -4,16 +4,16 @@
 [![NuGet](https://img.shields.io/nuget/v/AsicSharp.svg)](https://www.nuget.org/packages/AsicSharp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Create and verify **ASiC-S** (Associated Signature Containers) with **RFC 3161 timestamps** in .NET.
+Create and verify **ASiC-S** and **ASiC-E** (Associated Signature Containers) with **RFC 3161 timestamps** in .NET.
 
 Prove that data existed at a specific point in time using trusted Timestamp Authorities (TSA) like DigiCert — **without needing your own signing certificate**.
 
 ## What is this?
 
-An ASiC-S container is a ZIP file (per [ETSI EN 319 162](https://www.etsi.org/deliver/etsi_en/319100_319199/31916201/01.01.01_60/en_31916201v010101p.pdf)) that bundles:
+ASiC containers are ZIP files (per [ETSI EN 319 162](https://www.etsi.org/deliver/etsi_en/319100_319199/31916201/01.01.01_60/en_31916201v010101p.pdf)) that bundle your files with cryptographic timestamps:
 
-- Your original file (any format)
-- An RFC 3161 timestamp token from a trusted Timestamp Authority
+- **ASiC-S** (Simple) — A single file with a timestamp token
+- **ASiC-E** (Extended) — Multiple files with an ASiCManifest XML listing each file's digest, timestamped together
 
 This proves that **this exact data existed at this exact time**, signed by a trusted third party. The format is recognized by the EU eIDAS regulation for legal validity.
 
@@ -49,14 +49,23 @@ var options = new AsicTimestampOptions
 var tsaClient = new TsaClient(httpClient, options);
 var asicService = new AsicService(tsaClient, options);
 
-// Create a timestamped container
+// Create a timestamped container (single file → ASiC-S)
 var data = File.ReadAllBytes("contract.pdf");
 var result = await asicService.CreateAsync(data, "contract.pdf");
 
 File.WriteAllBytes("contract.pdf.asics", result.ContainerBytes);
 Console.WriteLine($"Timestamped at: {result.Timestamp:O}");
 
-// Verify it later
+// Create an ASiC-E container (multiple files)
+var files = new List<(string FileName, byte[] Data)>
+{
+    ("contract.pdf", File.ReadAllBytes("contract.pdf")),
+    ("annex.pdf", File.ReadAllBytes("annex.pdf"))
+};
+var extended = await asicService.CreateExtendedAsync(files);
+File.WriteAllBytes("bundle.asice", extended.ContainerBytes);
+
+// Verify any container (auto-detects ASiC-S or ASiC-E)
 var verification = asicService.VerifyFile("contract.pdf.asics");
 Console.WriteLine($"Valid: {verification.IsValid}");
 Console.WriteLine($"Timestamp: {verification.Timestamp:O}");
@@ -85,10 +94,13 @@ builder.Services.AddAsicSharp(
     "TimestampAuthorityUrl": "http://timestamp.digicert.com",
     "HashAlgorithm": "SHA256",
     "RequestSignerCertificates": true,
-    "Timeout": "00:00:30"
+    "Timeout": "00:00:30",
+    "MaxFileSize": 10485760
   }
 }
 ```
+
+> **File size limit:** By default, files larger than 10 MB are rejected to prevent accidental memory exhaustion. Set `MaxFileSize` to a higher value or `null` to disable the limit.
 
 ```csharp
 // In your service
@@ -112,16 +124,20 @@ public class MyService
 ### CLI Usage
 
 ```bash
-# Timestamp a file
+# Timestamp a single file (ASiC-S)
 asicts stamp contract.pdf
 asicts stamp contract.pdf --tsa http://timestamp.digicert.com --algorithm SHA256
 
-# Verify a container
-asicts verify contract.pdf.asics
-asicts verify contract.pdf.asics --verbose
+# Timestamp multiple files (ASiC-E)
+asicts stamp contract.pdf annex.pdf terms.txt
 
-# Extract original file
+# Verify a container (auto-detects ASiC-S or ASiC-E)
+asicts verify contract.pdf.asics
+asicts verify bundle.asice --verbose
+
+# Extract files from any container
 asicts extract contract.pdf.asics --output ./extracted/
+asicts extract bundle.asice --output ./extracted/
 
 # List known TSA servers
 asicts info
@@ -146,16 +162,33 @@ asicts info
 | Apple | `http://timestamp.apple.com/ts01` | |
 | Entrust | `http://timestamp.entrust.net/TSS/RFC3161sha2TS` | |
 
-## ASiC-S Container Format
+## Container Formats
+
+### ASiC-S (Simple) — Single File
 
 ```
 document.pdf.asics (ZIP)
 ├── mimetype                          → "application/vnd.etsi.asic-s+zip"
 ├── document.pdf                      → Your original file (unchanged)
 └── META-INF/
-    ├── timestamp.tst                 → RFC 3161 timestamp token
+    ├── timestamp.tst                 → RFC 3161 timestamp token (covers the data file)
     └── signature.p7s                 → (Optional) CMS/CAdES signature
 ```
+
+### ASiC-E (Extended) — Multiple Files
+
+```
+bundle.asice (ZIP)
+├── mimetype                          → "application/vnd.etsi.asic-e+zip"
+├── contract.pdf                      → Data file 1
+├── annex.pdf                         → Data file 2
+└── META-INF/
+    ├── ASiCManifest.xml              → Lists all files with their digests
+    ├── timestamp.tst                 → RFC 3161 timestamp token (covers the manifest)
+    └── signature.p7s                 → (Optional) CMS/CAdES signature
+```
+
+The timestamp in ASiC-E covers the ASiCManifest XML, which in turn contains cryptographic digests of every data file — so all files are transitively timestamped.
 
 ## Optional: Signing with Your Own Certificate
 
@@ -191,7 +224,9 @@ foreach (var step in result.Steps)
 
 ## Standards Compliance
 
-- **ETSI EN 319 162-1** — Associated Signature Containers (ASiC) baseline
+- **ETSI EN 319 162-1** — Associated Signature Containers (ASiC) baseline (ASiC-S)
+- **ETSI EN 319 162-2** — Associated Signature Containers extended (ASiC-E)
+- **ETSI TS 102 918** — ASiCManifest XML schema
 - **RFC 3161** — Internet X.509 PKI Time-Stamp Protocol
 - **RFC 5652** — Cryptographic Message Syntax (CMS)
 - **EU eIDAS Regulation** — Electronic identification and trust services
