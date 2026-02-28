@@ -1,5 +1,6 @@
 # AsicSharp
 
+[![CI](https://github.com/stevehansen/AsicSharp/actions/workflows/ci.yml/badge.svg)](https://github.com/stevehansen/AsicSharp/actions/workflows/ci.yml)
 [![NuGet](https://img.shields.io/nuget/v/AsicSharp.svg)](https://www.nuget.org/packages/AsicSharp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
