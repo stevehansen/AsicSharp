@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
+using System.Xml.Linq;
 using AsicSharp.Configuration;
 using AsicSharp.Models;
 using AsicSharp.Services;
@@ -202,6 +203,250 @@ public class AsicServiceTests
         var result = _service.Verify(new byte[] { 0x50, 0x4B, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
         result.IsValid.Should().BeFalse();
     }
+
+    #region ASiC-E (Extended) Tests
+
+    [Fact]
+    public async Task CreateExtendedAsync_ShouldProduceValidAsicEContainer()
+    {
+        // Arrange
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("file1.pdf", Encoding.UTF8.GetBytes("PDF content")),
+            ("file2.txt", Encoding.UTF8.GetBytes("Text content"))
+        };
+        SetupMockTsa();
+
+        // Act
+        var result = await _service.CreateExtendedAsync(files);
+
+        // Assert
+        result.ContainerBytes.Should().NotBeNullOrEmpty();
+        result.HashAlgorithm.Should().Be("SHA256");
+        result.DataHash.Should().NotBeNullOrEmpty();
+
+        using var zip = new ZipArchive(new MemoryStream(result.ContainerBytes), ZipArchiveMode.Read);
+
+        // mimetype must be first and ASiC-E
+        zip.Entries[0].FullName.Should().Be("mimetype");
+        using var reader = new StreamReader(zip.Entries[0].Open());
+        reader.ReadToEnd().Should().Be("application/vnd.etsi.asic-e+zip");
+
+        // Data files should exist
+        zip.GetEntry("file1.pdf").Should().NotBeNull();
+        zip.GetEntry("file2.txt").Should().NotBeNull();
+
+        // Manifest and timestamp should exist
+        zip.GetEntry("META-INF/ASiCManifest.xml").Should().NotBeNull();
+        zip.GetEntry("META-INF/timestamp.tst").Should().NotBeNull();
+        zip.GetEntry("META-INF/README.txt").Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task CreateExtendedAsync_ContainerShouldContainManifest()
+    {
+        // Arrange
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("file1.pdf", Encoding.UTF8.GetBytes("PDF content")),
+            ("file2.txt", Encoding.UTF8.GetBytes("Text content"))
+        };
+        SetupMockTsa();
+
+        // Act
+        var result = await _service.CreateExtendedAsync(files);
+
+        // Assert
+        using var zip = new ZipArchive(new MemoryStream(result.ContainerBytes), ZipArchiveMode.Read);
+        var manifestEntry = zip.GetEntry("META-INF/ASiCManifest.xml");
+        manifestEntry.Should().NotBeNull();
+
+        using var stream = manifestEntry!.Open();
+        var doc = XDocument.Load(stream);
+
+        // Verify namespace
+        XNamespace ns = "http://uri.etsi.org/02918/v1.2.1#";
+        doc.Root!.Name.Should().Be(ns + "ASiCManifest");
+
+        // Verify SigReference
+        var sigRef = doc.Root.Element(ns + "SigReference");
+        sigRef.Should().NotBeNull();
+        sigRef!.Attribute("URI")!.Value.Should().Be("META-INF/timestamp.tst");
+        sigRef.Attribute("MimeType")!.Value.Should().Be("application/vnd.etsi.timestamp-token");
+
+        // Verify DataObjectReferences
+        var dataRefs = doc.Root.Elements(ns + "DataObjectReference").ToList();
+        dataRefs.Should().HaveCount(2);
+
+        dataRefs[0].Attribute("URI")!.Value.Should().Be("file1.pdf");
+        dataRefs[0].Attribute("MimeType")!.Value.Should().Be("application/pdf");
+        dataRefs[0].Element(ns + "DigestMethod")!.Attribute("Algorithm")!.Value
+            .Should().Be("http://www.w3.org/2001/04/xmlenc#sha256");
+        dataRefs[0].Element(ns + "DigestValue")!.Value.Should().NotBeNullOrEmpty();
+
+        dataRefs[1].Attribute("URI")!.Value.Should().Be("file2.txt");
+        dataRefs[1].Attribute("MimeType")!.Value.Should().Be("text/plain");
+    }
+
+    [Fact]
+    public async Task CreateExtendedAsync_ShouldPreserveAllData()
+    {
+        // Arrange
+        var file1Data = Encoding.UTF8.GetBytes("First file content");
+        var file2Data = Encoding.UTF8.GetBytes("Second file content");
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("first.txt", file1Data),
+            ("second.txt", file2Data)
+        };
+        SetupMockTsa();
+
+        // Act
+        var result = await _service.CreateExtendedAsync(files);
+
+        // Assert — extract all and compare
+        var extracted = _service.ExtractAll(result.ContainerBytes);
+        extracted.Should().HaveCount(2);
+        extracted[0].FileName.Should().Be("first.txt");
+        extracted[0].Data.Should().BeEquivalentTo(file1Data);
+        extracted[1].FileName.Should().Be("second.txt");
+        extracted[1].Data.Should().BeEquivalentTo(file2Data);
+    }
+
+    [Fact]
+    public async Task CreateExtendedAsync_WithDuplicateFileNames_ShouldThrow()
+    {
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("file.txt", new byte[] { 1 }),
+            ("file.txt", new byte[] { 2 })
+        };
+        SetupMockTsa();
+
+        var act = () => _service.CreateExtendedAsync(files);
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*Duplicate*");
+    }
+
+    [Fact]
+    public async Task CreateExtendedAsync_WithEmptyFileList_ShouldThrow()
+    {
+        var files = new List<(string FileName, byte[] Data)>();
+
+        var act = () => _service.CreateExtendedAsync(files);
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*At least one file*");
+    }
+
+    [Fact]
+    public async Task CreateExtendedAsync_ManifestDigestsShouldMatchFileContent()
+    {
+        // Arrange
+        var file1Data = Encoding.UTF8.GetBytes("Content 1");
+        var file2Data = Encoding.UTF8.GetBytes("Content 2");
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("a.txt", file1Data),
+            ("b.pdf", file2Data)
+        };
+        SetupMockTsa();
+
+        // Act
+        var result = await _service.CreateExtendedAsync(files);
+
+        // Assert — verify manifest digests match actual file hashes
+        using var zip = new ZipArchive(new MemoryStream(result.ContainerBytes), ZipArchiveMode.Read);
+        var manifestEntry = zip.GetEntry("META-INF/ASiCManifest.xml")!;
+        using var stream = manifestEntry.Open();
+        var doc = XDocument.Load(stream);
+
+        XNamespace ns = "http://uri.etsi.org/02918/v1.2.1#";
+        var dataRefs = doc.Root!.Elements(ns + "DataObjectReference").ToList();
+
+        var expectedHash1 = Convert.ToBase64String(SHA256.HashData(file1Data));
+        var expectedHash2 = Convert.ToBase64String(SHA256.HashData(file2Data));
+
+        dataRefs[0].Element(ns + "DigestValue")!.Value.Should().Be(expectedHash1);
+        dataRefs[1].Element(ns + "DigestValue")!.Value.Should().Be(expectedHash2);
+    }
+
+    [Fact]
+    public async Task Verify_AsicEContainer_ShouldDetectContainerType()
+    {
+        // Arrange — build a minimal ASiC-E container
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("doc.txt", Encoding.UTF8.GetBytes("Hello"))
+        };
+        SetupMockTsa();
+
+        var createResult = await _service.CreateExtendedAsync(files);
+
+        // Act
+        var verifyResult = _service.Verify(createResult.ContainerBytes);
+
+        // Assert — should detect as ASiC-E (MIME type step reflects it)
+        var mimeStep = verifyResult.Steps.FirstOrDefault(s => s.Name == "MIME type");
+        mimeStep.Should().NotBeNull();
+        mimeStep!.Detail.Should().Contain("ASiC-E");
+        verifyResult.FileNames.Should().Contain("doc.txt");
+    }
+
+    [Fact]
+    public void ExtractAll_ShouldReturnAllFiles_ForAsicS()
+    {
+        // Arrange — build a simple ASiC-S container manually
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(mimeEntry.Open(), Encoding.UTF8))
+                writer.Write("application/vnd.etsi.asic-s+zip");
+
+            var dataEntry = zip.CreateEntry("test.txt", CompressionLevel.Optimal);
+            using (var stream = dataEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("test content"));
+
+            var tsEntry = zip.CreateEntry("META-INF/timestamp.tst", CompressionLevel.Optimal);
+            using (var stream = tsEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("FAKE_TOKEN"));
+        }
+
+        // Act
+        var result = _service.ExtractAll(ms.ToArray());
+
+        // Assert
+        result.Should().HaveCount(1);
+        result[0].FileName.Should().Be("test.txt");
+    }
+
+    [Fact]
+    public async Task ExtractAll_ShouldReturnAllFiles_ForAsicE()
+    {
+        // Arrange
+        var file1Data = Encoding.UTF8.GetBytes("File 1");
+        var file2Data = Encoding.UTF8.GetBytes("File 2");
+        var file3Data = Encoding.UTF8.GetBytes("File 3");
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("one.txt", file1Data),
+            ("two.pdf", file2Data),
+            ("three.json", file3Data)
+        };
+        SetupMockTsa();
+
+        var createResult = await _service.CreateExtendedAsync(files);
+
+        // Act
+        var extracted = _service.ExtractAll(createResult.ContainerBytes);
+
+        // Assert
+        extracted.Should().HaveCount(3);
+        extracted.Select(e => e.FileName).Should().BeEquivalentTo(["one.txt", "two.pdf", "three.json"]);
+        extracted[0].Data.Should().BeEquivalentTo(file1Data);
+        extracted[1].Data.Should().BeEquivalentTo(file2Data);
+        extracted[2].Data.Should().BeEquivalentTo(file3Data);
+    }
+
+    #endregion
 
     private void SetupMockTsa()
     {

@@ -34,11 +34,14 @@ public sealed class AsicVerifyResult
     /// <summary>The UTC timestamp from the TSA, if successfully decoded.</summary>
     public DateTimeOffset? Timestamp { get; init; }
 
-    /// <summary>The name of the data file inside the container.</summary>
+    /// <summary>The name of the data file inside the container (first/only file for ASiC-S).</summary>
     public string? FileName { get; init; }
 
-    /// <summary>The raw data bytes extracted from the container.</summary>
+    /// <summary>The raw data bytes extracted from the container (first/only file for ASiC-S).</summary>
     public byte[]? DataBytes { get; init; }
+
+    /// <summary>All data file names inside the container (populated for both ASiC-S and ASiC-E).</summary>
+    public IReadOnlyList<string>? FileNames { get; init; }
 
     /// <summary>The TSA certificate that signed the timestamp, if available.</summary>
     public X509Certificate2? TsaCertificate { get; init; }

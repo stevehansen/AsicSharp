@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.CommandLine.Invocation;
 using AsicSharp.Configuration;
 using AsicSharp.Extensions;
+using AsicSharp.Models;
 using AsicSharp.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -12,7 +13,7 @@ internal static class Program
 {
     static async Task<int> Main(string[] args)
     {
-        var rootCommand = new RootCommand("ASiC-S Timestamp Container Tool — create and verify RFC 3161 timestamped containers")
+        var rootCommand = new RootCommand("ASiC Timestamp Container Tool — create and verify RFC 3161 timestamped containers (ASiC-S and ASiC-E)")
         {
             BuildStampCommand(),
             BuildVerifyCommand(),
@@ -25,10 +26,13 @@ internal static class Program
 
     private static Command BuildStampCommand()
     {
-        var fileArg = new Argument<FileInfo>("file", "The file to timestamp");
+        var fileArg = new Argument<FileInfo[]>("file", "The file(s) to timestamp (multiple files create an ASiC-E container)")
+        {
+            Arity = ArgumentArity.OneOrMore
+        };
         var outputOption = new Option<FileInfo?>(
             ["--output", "-o"],
-            "Output path for the .asics container (defaults to <file>.asics)");
+            "Output path for the container (defaults to <file>.asics or <file>.asice)");
         var tsaOption = new Option<string[]>(
             ["--tsa", "-t"],
             "Timestamp Authority URL(s) — first is primary, rest are fallbacks (default: DigiCert)")
@@ -40,26 +44,31 @@ internal static class Program
             () => "SHA256",
             "Hash algorithm (SHA256, SHA384, SHA512)");
 
-        var cmd = new Command("stamp", "Create an ASiC-S container with a timestamp for a file")
+        var cmd = new Command("stamp", "Create an ASiC container with a timestamp for one or more files")
         {
             fileArg, outputOption, tsaOption, algorithmOption
         };
 
         cmd.SetHandler(async (InvocationContext ctx) =>
         {
-            var file = ctx.ParseResult.GetValueForArgument(fileArg);
+            var files = ctx.ParseResult.GetValueForArgument(fileArg);
             var output = ctx.ParseResult.GetValueForOption(outputOption);
             var tsaUrls = ctx.ParseResult.GetValueForOption(tsaOption);
             var algorithm = ctx.ParseResult.GetValueForOption(algorithmOption)!;
 
-            if (!file.Exists)
+            foreach (var file in files)
             {
-                Console.Error.WriteLine($"Error: File not found: {file.FullName}");
-                ctx.ExitCode = 1;
-                return;
+                if (!file.Exists)
+                {
+                    Console.Error.WriteLine($"Error: File not found: {file.FullName}");
+                    ctx.ExitCode = 1;
+                    return;
+                }
             }
 
-            var outputPath = output?.FullName ?? file.FullName + AsicConstants.Extension;
+            bool isExtended = files.Length > 1;
+            var defaultExt = isExtended ? AsicConstants.ExtensionExtended : AsicConstants.Extension;
+            var outputPath = output?.FullName ?? files[0].FullName + defaultExt;
 
             var hashAlgorithm = algorithm.ToUpperInvariant() switch
             {
@@ -72,14 +81,26 @@ internal static class Program
             using var services = BuildServiceProvider(tsaUrls, hashAlgorithm);
             var asicService = services.GetRequiredService<IAsicService>();
 
-            Console.WriteLine($"Timestamping: {file.FullName}");
+            var format = isExtended ? "ASiC-E" : "ASiC-S";
+            Console.WriteLine($"Format:       {format}");
+            foreach (var file in files)
+                Console.WriteLine($"Timestamping: {file.FullName}");
             Console.WriteLine($"TSA:          {string.Join(", ", tsaUrls ?? [WellKnownTsa.DigiCert])}");
             Console.WriteLine($"Algorithm:    {hashAlgorithm.Name}");
             Console.WriteLine();
 
             try
             {
-                var result = await asicService.CreateFromFileAsync(file.FullName, ctx.GetCancellationToken());
+                AsicCreateResult result;
+                if (isExtended)
+                {
+                    result = await asicService.CreateExtendedFromFilesAsync(
+                        files.Select(f => f.FullName), ctx.GetCancellationToken());
+                }
+                else
+                {
+                    result = await asicService.CreateFromFileAsync(files[0].FullName, ctx.GetCancellationToken());
+                }
 
                 File.WriteAllBytes(outputPath, result.ContainerBytes);
 
@@ -100,12 +121,12 @@ internal static class Program
 
     private static Command BuildVerifyCommand()
     {
-        var fileArg = new Argument<FileInfo>("container", "The .asics container file to verify");
+        var fileArg = new Argument<FileInfo>("container", "The .asics/.asice container file to verify");
         var verboseOption = new Option<bool>(
             ["--verbose", "-v"],
             "Show detailed verification steps");
 
-        var cmd = new Command("verify", "Verify an ASiC-S container")
+        var cmd = new Command("verify", "Verify an ASiC container (ASiC-S or ASiC-E)")
         {
             fileArg, verboseOption
         };
@@ -144,7 +165,14 @@ internal static class Program
             if (result.IsValid)
             {
                 Console.WriteLine($"✓ VALID");
-                Console.WriteLine($"  File:       {result.FileName}");
+                if (result.FileNames is { Count: > 1 })
+                {
+                    Console.WriteLine($"  Files:      {string.Join(", ", result.FileNames)}");
+                }
+                else
+                {
+                    Console.WriteLine($"  File:       {result.FileName}");
+                }
                 Console.WriteLine($"  Timestamp:  {result.Timestamp:O}");
                 Console.WriteLine($"  Hash:       {result.DataHash} ({result.HashAlgorithm})");
 
@@ -168,12 +196,12 @@ internal static class Program
 
     private static Command BuildExtractCommand()
     {
-        var fileArg = new Argument<FileInfo>("container", "The .asics container file");
+        var fileArg = new Argument<FileInfo>("container", "The .asics/.asice container file");
         var outputOption = new Option<DirectoryInfo?>(
             ["--output", "-o"],
             "Output directory (defaults to current directory)");
 
-        var cmd = new Command("extract", "Extract the original file from an ASiC-S container")
+        var cmd = new Command("extract", "Extract files from an ASiC container (ASiC-S or ASiC-E)")
         {
             fileArg, outputOption
         };
@@ -196,13 +224,15 @@ internal static class Program
             try
             {
                 var containerBytes = File.ReadAllBytes(file.FullName);
-                var (fileName, data) = asicService.Extract(containerBytes);
+                var files = asicService.ExtractAll(containerBytes);
 
-                var outputPath = Path.Combine(outputDir, fileName);
                 Directory.CreateDirectory(outputDir);
-                File.WriteAllBytes(outputPath, data);
-
-                Console.WriteLine($"Extracted: {outputPath} ({data.Length:N0} bytes)");
+                foreach (var (fileName, data) in files)
+                {
+                    var outputPath = Path.Combine(outputDir, fileName);
+                    File.WriteAllBytes(outputPath, data);
+                    Console.WriteLine($"Extracted: {outputPath} ({data.Length:N0} bytes)");
+                }
             }
             catch (Exception ex)
             {
