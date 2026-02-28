@@ -70,3 +70,4 @@ Both services have dual constructors: `IOptions<AsicTimestampOptions>` for DI (m
 - 2-space indent for XML/JSON/YAML files
 - File-scoped namespaces
 - Warnings as errors
+- **Conventional Commits**: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `ci:`, `chore:`
