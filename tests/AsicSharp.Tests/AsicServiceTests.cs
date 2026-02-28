@@ -135,6 +135,36 @@ public class AsicServiceTests
     }
 
     [Fact]
+    public void Extract_WithPathTraversal_ShouldReturnSanitizedFileName()
+    {
+        // Arrange — craft a malicious container with path traversal in the entry name
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(mimeEntry.Open(), Encoding.UTF8))
+                writer.Write("application/vnd.etsi.asic-s+zip");
+
+            // Malicious entry with path traversal
+            var dataEntry = zip.CreateEntry("../../../evil.txt", CompressionLevel.Optimal);
+            using (var stream = dataEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("malicious content"));
+
+            var tsEntry = zip.CreateEntry("META-INF/timestamp.tst", CompressionLevel.Optimal);
+            using (var stream = tsEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("FAKE_TOKEN"));
+        }
+
+        var containerBytes = ms.ToArray();
+
+        // Act
+        var (fileName, _) = _service.Extract(containerBytes);
+
+        // Assert — path traversal stripped, only the base filename remains
+        fileName.Should().Be("evil.txt");
+    }
+
+    [Fact]
     public void Verify_WithEmptyBytes_ShouldThrow()
     {
         var act = () => _service.Verify(Array.Empty<byte>());

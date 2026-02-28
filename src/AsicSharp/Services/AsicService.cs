@@ -305,7 +305,7 @@ public sealed class AsicService : IAsicService
             {
                 IsValid = allPassed,
                 Timestamp = timestamp,
-                FileName = dataEntry.FullName,
+                FileName = Path.GetFileName(dataEntry.FullName),
                 DataBytes = dataBytes,
                 TsaCertificate = tsaCert,
                 SigningCertificate = signingCert,
@@ -339,7 +339,12 @@ public sealed class AsicService : IAsicService
         var dataEntry = FindDataEntry(zip)
             ?? throw new InvalidAsicContainerException("No data file found in container.");
 
-        return (dataEntry.FullName, ReadEntryBytes(dataEntry));
+        // Sanitize entry name to prevent path traversal (Zip Slip)
+        var fileName = Path.GetFileName(dataEntry.FullName);
+        if (string.IsNullOrEmpty(fileName))
+            throw new InvalidAsicContainerException("Data entry has an invalid file name.");
+
+        return (fileName, ReadEntryBytes(dataEntry));
     }
 
     #region Private methods
