@@ -61,7 +61,7 @@ Both services have dual constructors: `IOptions<AsicTimestampOptions>` for DI (m
 
 ## CI & Publishing
 
-- **CI** (`.github/workflows/ci.yml`): builds on .NET 8 and 10, runs unit tests, runs integration tests separately (`continue-on-error: true` since TSAs may be unavailable), packs NuGet on main branch.
+- **CI** (`.github/workflows/ci.yml`): builds on .NET 8 and 10, runs unit tests, runs integration tests separately (`continue-on-error: true` since TSAs may be unavailable).
 - **Publish** (`.github/workflows/publish.yml`): Tag-triggered (`X.Y.Z`), uses OIDC trusted publishing via `nuget/login@v1` with `vars.NUGET_USER`. No API key secrets needed.
 
 ## Code Style
