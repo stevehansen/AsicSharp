@@ -133,7 +133,7 @@ public sealed class AsicService : IAsicService
             Timestamp = tsResult.Timestamp,
             HashAlgorithm = _options.HashAlgorithm.Name!,
             DataHash = hashHex,
-            TimestampAuthorityUrl = _options.TimestampAuthorityUrl
+            TimestampAuthorityUrl = tsResult.TimestampAuthorityUrl ?? _options.TimestampAuthorityUrl
         };
     }
 
@@ -349,6 +349,27 @@ public sealed class AsicService : IAsicService
 
     #region Private methods
 
+    private const string ReadmeContent =
+        """
+        This is an ASiC-S (Associated Signature Container) compliant with ETSI EN 319 162-1.
+
+        It contains an RFC 3161 timestamp that cryptographically proves the enclosed data
+        file existed at a specific point in time. The timestamp is issued by a trusted
+        Timestamp Authority (TSA) and is self-verifying — no signing certificate is required.
+
+        Container contents:
+          - mimetype           : Container MIME type identifier
+          - <datafile>         : The original data file
+          - META-INF/timestamp.tst : The RFC 3161 timestamp token
+          - META-INF/signature.p7s : CAdES signature (if present)
+
+        To verify this container:
+          CLI:           asicts verify <file>.asics
+          NuGet package: https://www.nuget.org/packages/AsicSharp
+
+        More information: https://github.com/stevehansen/AsicSharp
+        """;
+
     private static byte[] BuildContainer(
         byte[] data, string fileName, byte[] timestampToken, byte[]? signatureBytes)
     {
@@ -376,7 +397,14 @@ public sealed class AsicService : IAsicService
                 stream.Write(timestampToken, 0, timestampToken.Length);
             }
 
-            // 4. Optional CMS signature in META-INF/
+            // 4. README in META-INF/
+            var readmeEntry = zip.CreateEntry(AsicConstants.ReadmeEntryPath, CompressionLevel.Optimal);
+            using (var writer = new StreamWriter(readmeEntry.Open(), new UTF8Encoding(false)))
+            {
+                writer.Write(ReadmeContent);
+            }
+
+            // 5. Optional CMS signature in META-INF/
             if (signatureBytes != null)
             {
                 var sigEntry = zip.CreateEntry(AsicConstants.SignatureEntryPath, CompressionLevel.Optimal);

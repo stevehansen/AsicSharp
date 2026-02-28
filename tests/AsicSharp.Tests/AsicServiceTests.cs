@@ -67,7 +67,7 @@ public class AsicServiceTests
         // Assert — should be a valid ZIP
         using var zip = new ZipArchive(new MemoryStream(result.ContainerBytes), ZipArchiveMode.Read);
 
-        zip.Entries.Should().HaveCountGreaterOrEqualTo(3); // mimetype, data, timestamp
+        zip.Entries.Should().HaveCountGreaterOrEqualTo(4); // mimetype, data, timestamp, README.txt
 
         // mimetype must be first
         zip.Entries[0].FullName.Should().Be("mimetype");
@@ -82,6 +82,31 @@ public class AsicServiceTests
 
         // Timestamp should exist
         zip.GetEntry("META-INF/timestamp.tst").Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task CreateAsync_ContainerShouldContainReadme()
+    {
+        // Arrange
+        var data = Encoding.UTF8.GetBytes("Test data");
+        SetupMockTsa();
+
+        // Act
+        var result = await _service.CreateAsync(data, "document.txt");
+
+        // Assert
+        using var zip = new ZipArchive(new MemoryStream(result.ContainerBytes), ZipArchiveMode.Read);
+
+        var readmeEntry = zip.GetEntry("META-INF/README.txt");
+        readmeEntry.Should().NotBeNull();
+
+        using var reader = new StreamReader(readmeEntry!.Open());
+        var content = reader.ReadToEnd();
+        content.Should().Contain("ASiC-S");
+        content.Should().Contain("ETSI EN 319 162-1");
+        content.Should().Contain("RFC 3161");
+        content.Should().Contain("asicts verify");
+        content.Should().Contain("https://github.com/stevehansen/AsicSharp");
     }
 
     [Fact]

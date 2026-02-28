@@ -29,6 +29,9 @@ internal static class AsicConstants
     /// <summary>Full path for the CAdES signature inside the container.</summary>
     public const string SignatureEntryPath = MetaInfDir + "/" + SignatureFileName;
 
+    /// <summary>Full path for the README inside the container.</summary>
+    public const string ReadmeEntryPath = MetaInfDir + "/README.txt";
+
     /// <summary>Manifest file (optional, for ASiC-E).</summary>
     public const string ManifestEntryPath = MetaInfDir + "/manifest.xml";
 }

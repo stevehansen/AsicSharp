@@ -15,4 +15,7 @@ public sealed class TimestampResult
 
     /// <summary>The TSA's signing certificate, if included in the response.</summary>
     public X509Certificate2? TsaCertificate { get; init; }
+
+    /// <summary>The TSA URL that actually issued the timestamp.</summary>
+    public string? TimestampAuthorityUrl { get; init; }
 }

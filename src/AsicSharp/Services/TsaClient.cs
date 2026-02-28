@@ -86,8 +86,46 @@ public sealed class TsaClient : ITsaClient
         if (hash == null || hash.Length == 0)
             throw new ArgumentException("Hash cannot be null or empty.", nameof(hash));
 
+        // Build effective URL list: TimestampAuthorityUrls if non-empty, else single TimestampAuthorityUrl
+        var tsaUrls = _options.TimestampAuthorityUrls is { Count: > 0 }
+            ? _options.TimestampAuthorityUrls
+            : new[] { _options.TimestampAuthorityUrl };
+
+        Exception? lastException = null;
+
+        foreach (var tsaUrl in tsaUrls)
+        {
+            try
+            {
+                return await RequestTimestampFromUrlAsync(hash, hashAlgorithm, tsaUrl, cancellationToken);
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning("TSA {TsaUrl} failed: {Message}. Trying next TSA...", tsaUrl, ex.Message);
+                lastException = ex;
+            }
+            catch (TimestampAuthorityException ex)
+            {
+                _logger.LogWarning("TSA {TsaUrl} failed: {Message}. Trying next TSA...", tsaUrl, ex.Message);
+                lastException = ex;
+            }
+        }
+
+        // All URLs failed — throw the last exception
+        throw lastException is TimestampAuthorityException
+            ? lastException
+            : new TimestampAuthorityException(
+                $"All TSA URLs failed. Last error: {lastException?.Message}", lastException!);
+    }
+
+    private async Task<TimestampResult> RequestTimestampFromUrlAsync(
+        byte[] hash,
+        HashAlgorithmName hashAlgorithm,
+        string tsaUrl,
+        CancellationToken cancellationToken)
+    {
         _logger.LogDebug("Requesting timestamp from {TsaUrl} using {Algorithm}",
-            _options.TimestampAuthorityUrl, hashAlgorithm.Name);
+            tsaUrl, hashAlgorithm.Name);
 
         // Build the RFC 3161 timestamp request
         ReadOnlyMemory<byte>? nonce = null;
@@ -113,21 +151,18 @@ public sealed class TsaClient : ITsaClient
         HttpResponseMessage response;
         try
         {
-            response = await _httpClient.PostAsync(
-                _options.TimestampAuthorityUrl,
-                content,
-                cancellationToken);
+            response = await _httpClient.PostAsync(tsaUrl, content, cancellationToken);
         }
         catch (HttpRequestException ex)
         {
             throw new TimestampAuthorityException(
-                $"Failed to connect to TSA at {_options.TimestampAuthorityUrl}: {ex.Message}", ex);
+                $"Failed to connect to TSA at {tsaUrl}: {ex.Message}", ex);
         }
 
         if (!response.IsSuccessStatusCode)
         {
             throw new TimestampAuthorityException(
-                $"TSA returned HTTP {(int)response.StatusCode} ({response.StatusCode})",
+                $"TSA at {tsaUrl} returned HTTP {(int)response.StatusCode} ({response.StatusCode})",
                 (int)response.StatusCode);
         }
 
@@ -142,11 +177,11 @@ public sealed class TsaClient : ITsaClient
         catch (CryptographicException ex)
         {
             throw new TimestampAuthorityException(
-                $"TSA returned invalid response: {ex.Message}", ex);
+                $"TSA at {tsaUrl} returned invalid response: {ex.Message}", ex);
         }
 
         _logger.LogInformation("Timestamp received: {Timestamp:O} from {TsaUrl}",
-            token.TokenInfo.Timestamp, _options.TimestampAuthorityUrl);
+            token.TokenInfo.Timestamp, tsaUrl);
 
         // Extract TSA certificate if present
         X509Certificate2? tsaCert = null;
@@ -163,7 +198,8 @@ public sealed class TsaClient : ITsaClient
         {
             TokenBytes = token.AsSignedCms().Encode(),
             Timestamp = token.TokenInfo.Timestamp,
-            TsaCertificate = tsaCert
+            TsaCertificate = tsaCert,
+            TimestampAuthorityUrl = tsaUrl
         };
     }
 

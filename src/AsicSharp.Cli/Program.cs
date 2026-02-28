@@ -29,10 +29,12 @@ internal static class Program
         var outputOption = new Option<FileInfo?>(
             ["--output", "-o"],
             "Output path for the .asics container (defaults to <file>.asics)");
-        var tsaOption = new Option<string>(
+        var tsaOption = new Option<string[]>(
             ["--tsa", "-t"],
-            () => WellKnownTsa.DigiCert,
-            "Timestamp Authority URL");
+            "Timestamp Authority URL(s) — first is primary, rest are fallbacks (default: DigiCert)")
+        {
+            Arity = ArgumentArity.OneOrMore
+        };
         var algorithmOption = new Option<string>(
             ["--algorithm", "-a"],
             () => "SHA256",
@@ -47,7 +49,7 @@ internal static class Program
         {
             var file = ctx.ParseResult.GetValueForArgument(fileArg);
             var output = ctx.ParseResult.GetValueForOption(outputOption);
-            var tsa = ctx.ParseResult.GetValueForOption(tsaOption)!;
+            var tsaUrls = ctx.ParseResult.GetValueForOption(tsaOption);
             var algorithm = ctx.ParseResult.GetValueForOption(algorithmOption)!;
 
             if (!file.Exists)
@@ -67,11 +69,11 @@ internal static class Program
                 _ => throw new ArgumentException($"Unsupported algorithm: {algorithm}")
             };
 
-            using var services = BuildServiceProvider(tsa, hashAlgorithm);
+            using var services = BuildServiceProvider(tsaUrls, hashAlgorithm);
             var asicService = services.GetRequiredService<IAsicService>();
 
             Console.WriteLine($"Timestamping: {file.FullName}");
-            Console.WriteLine($"TSA:          {tsa}");
+            Console.WriteLine($"TSA:          {string.Join(", ", tsaUrls ?? [WellKnownTsa.DigiCert])}");
             Console.WriteLine($"Algorithm:    {hashAlgorithm.Name}");
             Console.WriteLine();
 
@@ -232,7 +234,7 @@ internal static class Program
     }
 
     private static ServiceProvider BuildServiceProvider(
-        string? tsaUrl = null,
+        string[]? tsaUrls = null,
         System.Security.Cryptography.HashAlgorithmName? hashAlgorithm = null)
     {
         var services = new ServiceCollection();
@@ -243,7 +245,11 @@ internal static class Program
 
         services.AddAsicSharp(options =>
         {
-            if (tsaUrl != null) options.TimestampAuthorityUrl = tsaUrl;
+            if (tsaUrls is { Length: > 0 })
+            {
+                options.TimestampAuthorityUrl = tsaUrls[0];
+                options.TimestampAuthorityUrls = tsaUrls.ToList();
+            }
             if (hashAlgorithm.HasValue) options.HashAlgorithm = hashAlgorithm.Value;
         });
 

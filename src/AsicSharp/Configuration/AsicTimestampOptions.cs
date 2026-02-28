@@ -16,8 +16,16 @@ public class AsicTimestampOptions
     /// <summary>
     /// The URL of the RFC 3161 Timestamp Authority.
     /// Defaults to DigiCert's free TSA.
+    /// When <see cref="TimestampAuthorityUrls"/> is non-empty, this property is ignored.
     /// </summary>
     public string TimestampAuthorityUrl { get; set; } = WellKnownTsa.DigiCert;
+
+    /// <summary>
+    /// Optional list of TSA URLs to try in order. If the first TSA is unavailable,
+    /// the next one is tried automatically. When empty, <see cref="TimestampAuthorityUrl"/>
+    /// is used as a single-item list.
+    /// </summary>
+    public IList<string> TimestampAuthorityUrls { get; set; } = new List<string>();
 
     /// <summary>
     /// The hash algorithm to use for timestamping. Defaults to SHA-256.
