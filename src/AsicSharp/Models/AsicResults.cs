@@ -1,0 +1,70 @@
+using System.Security.Cryptography.X509Certificates;
+
+namespace AsicSharp.Models;
+
+/// <summary>
+/// Result of creating an ASiC-S container.
+/// </summary>
+public sealed class AsicCreateResult
+{
+    /// <summary>The raw bytes of the ASiC-S container (.asics ZIP).</summary>
+    public required byte[] ContainerBytes { get; init; }
+
+    /// <summary>The UTC timestamp from the TSA.</summary>
+    public required DateTimeOffset Timestamp { get; init; }
+
+    /// <summary>The hash algorithm used.</summary>
+    public required string HashAlgorithm { get; init; }
+
+    /// <summary>The hex-encoded hash of the original data.</summary>
+    public required string DataHash { get; init; }
+
+    /// <summary>The TSA URL that issued the timestamp.</summary>
+    public required string TimestampAuthorityUrl { get; init; }
+}
+
+/// <summary>
+/// Result of verifying an ASiC-S container.
+/// </summary>
+public sealed class AsicVerifyResult
+{
+    /// <summary>Whether the timestamp and data integrity are valid.</summary>
+    public required bool IsValid { get; init; }
+
+    /// <summary>The UTC timestamp from the TSA, if successfully decoded.</summary>
+    public DateTimeOffset? Timestamp { get; init; }
+
+    /// <summary>The name of the data file inside the container.</summary>
+    public string? FileName { get; init; }
+
+    /// <summary>The raw data bytes extracted from the container.</summary>
+    public byte[]? DataBytes { get; init; }
+
+    /// <summary>The TSA certificate that signed the timestamp, if available.</summary>
+    public X509Certificate2? TsaCertificate { get; init; }
+
+    /// <summary>The signing certificate, if the container includes a CMS/CAdES signature.</summary>
+    public X509Certificate2? SigningCertificate { get; init; }
+
+    /// <summary>Hash algorithm used in the timestamp.</summary>
+    public string? HashAlgorithm { get; init; }
+
+    /// <summary>Hex-encoded hash of the data file.</summary>
+    public string? DataHash { get; init; }
+
+    /// <summary>Error message if verification failed.</summary>
+    public string? Error { get; init; }
+
+    /// <summary>Detailed verification steps performed.</summary>
+    public IReadOnlyList<VerificationStep> Steps { get; init; } = [];
+}
+
+/// <summary>
+/// A single step in the verification process, for audit/diagnostics.
+/// </summary>
+public sealed class VerificationStep
+{
+    public required string Name { get; init; }
+    public required bool Passed { get; init; }
+    public string? Detail { get; init; }
+}

@@ -1,0 +1,41 @@
+name: Publish to NuGet
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for OIDC trusted publishing
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Build
+        run: dotnet build -c Release
+
+      - name: Pack library
+        run: dotnet pack src/AsicSharp/AsicSharp.csproj -c Release --no-build --output ./nupkg
+
+      - name: Pack CLI tool
+        run: dotnet pack src/AsicSharp.Cli/AsicSharp.Cli.csproj -c Release --no-build --output ./nupkg
+
+      - name: NuGet login (OIDC)
+        uses: nuget/login@v1
+        id: login
+        with:
+          user: ${{ vars.NUGET_USER }}
+
+      - name: Publish to NuGet
+        run: dotnet nuget push ./nupkg/*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json

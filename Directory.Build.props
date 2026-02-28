@@ -1,0 +1,20 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+
+    <!-- Package metadata -->
+    <Authors>Steve Hansen</Authors>
+    <Copyright>Steve Hansen</Copyright>
+    <RepositoryUrl>https://github.com/stevehansen/AsicSharp/</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/stevehansen/AsicSharp/</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon Condition="Exists('$(MSBuildThisFileDirectory)icon.png')">icon.png</PackageIcon>
+    <PackageTags>asic;asics;timestamp;rfc3161;digital-signature;etsi;eidas;cryptography</PackageTags>
+  </PropertyGroup>
+</Project>

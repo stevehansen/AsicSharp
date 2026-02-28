@@ -1,0 +1,45 @@
+## .NET
+[Bb]in/
+[Oo]bj/
+artifacts/
+publish/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## NuGet
+*.nupkg
+*.snupkg
+nupkg/
+**/packages/*
+!**/packages/build/
+
+## Visual Studio
+.vs/
+*.rsuser
+*.sln.docstates
+launchSettings.json
+
+## JetBrains Rider
+.idea/
+*.sln.iml
+
+## VS Code
+.vscode/
+
+## Editor backups
+*.swp
+*~
+
+## OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## Test results
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+/.claude/settings.local.json
