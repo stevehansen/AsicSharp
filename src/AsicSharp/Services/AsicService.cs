@@ -128,6 +128,7 @@ public sealed class AsicService : IAsicService
             throw new ArgumentException("File name cannot be null or empty.", nameof(fileName));
 
         ValidateFileName(fileName);
+        ValidateFileSize(fileName, data.Length);
 
         _logger.LogDebug("Creating ASiC-S container for {FileName} ({Size} bytes)", fileName, data.Length);
 
@@ -242,6 +243,7 @@ public sealed class AsicService : IAsicService
                 return FailResult("No data file found in container", steps);
             }
 
+            ValidateEntrySize(dataEntry);
             var dataBytes = ReadEntryBytes(dataEntry);
             steps.Add(new VerificationStep
             {
@@ -385,6 +387,7 @@ public sealed class AsicService : IAsicService
         if (string.IsNullOrEmpty(fileName))
             throw new InvalidAsicContainerException("Data entry has an invalid file name.");
 
+        ValidateEntrySize(dataEntry);
         return (fileName, ReadEntryBytes(dataEntry));
     }
 
@@ -407,6 +410,7 @@ public sealed class AsicService : IAsicService
                 throw new ArgumentException($"Data for '{fileName}' cannot be null or empty.");
 
             ValidateFileName(fileName);
+            ValidateFileSize(fileName, data.Length);
 
             if (!fileNames.Add(fileName))
                 throw new ArgumentException($"Duplicate file name: '{fileName}'.");
@@ -482,6 +486,7 @@ public sealed class AsicService : IAsicService
             if (string.IsNullOrEmpty(fileName))
                 throw new InvalidAsicContainerException("Data entry has an invalid file name.");
 
+            ValidateEntrySize(entry);
             result.Add((fileName, ReadEntryBytes(entry)));
         }
 
@@ -849,6 +854,7 @@ public sealed class AsicService : IAsicService
             var expectedDigest = digestValueEl.Value;
             var hashAlg = XmlUriToHashAlgorithmName(algUri);
 
+            ValidateEntrySize(entry);
             var fileBytes = ReadEntryBytes(entry);
             var actualHash = ComputeHash(fileBytes, hashAlg);
             var actualDigest = Convert.ToBase64String(actualHash);
@@ -1045,6 +1051,21 @@ public sealed class AsicService : IAsicService
 
         if (fileName.StartsWith(AsicConstants.MetaInfDir, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("File name cannot start with 'META-INF'.", nameof(fileName));
+    }
+
+    private void ValidateFileSize(string fileName, long size)
+    {
+        if (_options.MaxFileSize.HasValue && size > _options.MaxFileSize.Value)
+            throw new ArgumentException(
+                $"File '{fileName}' exceeds the maximum allowed size of {_options.MaxFileSize.Value:N0} bytes ({size:N0} bytes).",
+                nameof(fileName));
+    }
+
+    private void ValidateEntrySize(ZipArchiveEntry entry)
+    {
+        if (_options.MaxFileSize.HasValue && entry.Length > _options.MaxFileSize.Value)
+            throw new InvalidAsicContainerException(
+                $"Entry '{entry.FullName}' exceeds the maximum allowed size of {_options.MaxFileSize.Value:N0} bytes ({entry.Length:N0} bytes).");
     }
 
     private static string HashAlgorithmToXmlUri(HashAlgorithmName name)

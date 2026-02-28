@@ -50,6 +50,12 @@ public class AsicTimestampOptions
     public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// Maximum allowed size (in bytes) for a single data file. Prevents accidental memory
+    /// exhaustion. Set to <c>null</c> to disable the limit. Defaults to 10 MB.
+    /// </summary>
+    public long? MaxFileSize { get; set; } = 10 * 1024 * 1024;
+
+    /// <summary>
     /// Optional signing certificate for creating signed ASiC containers (ASiC with CAdES signature).
     /// When null, only timestamp-based containers are created.
     /// </summary>

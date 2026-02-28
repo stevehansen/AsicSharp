@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Linq;
+using AsicSharp;
 using AsicSharp.Configuration;
 using AsicSharp.Models;
 using AsicSharp.Services;
@@ -202,6 +203,135 @@ public class AsicServiceTests
     {
         var result = _service.Verify(new byte[] { 0x50, 0x4B, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
         result.IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CreateAsync_ExceedingMaxFileSize_ShouldThrow()
+    {
+        var data = new byte[10 * 1024 * 1024 + 1]; // 10 MB + 1 byte
+        SetupMockTsa();
+
+        var act = () => _service.CreateAsync(data, "large.bin");
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*exceeds the maximum allowed size*");
+    }
+
+    [Fact]
+    public async Task CreateAsync_WithMaxFileSizeDisabled_ShouldNotThrow()
+    {
+        var options = new AsicTimestampOptions { MaxFileSize = null };
+        var service = new AsicService(_mockTsa, options);
+        var data = new byte[11 * 1024 * 1024]; // 11 MB
+        data[0] = 1; // ensure non-empty
+
+        _mockTsa.RequestTimestampAsync(
+            Arg.Any<byte[]>(),
+            Arg.Any<HashAlgorithmName>(),
+            Arg.Any<CancellationToken>())
+            .Returns(new TimestampResult
+            {
+                TokenBytes = CreateFakeTimestampToken(),
+                Timestamp = DateTimeOffset.UtcNow
+            });
+
+        var act = () => service.CreateAsync(data, "large.bin");
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task CreateExtendedAsync_ExceedingMaxFileSize_ShouldThrow()
+    {
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("small.txt", new byte[] { 1, 2, 3 }),
+            ("large.bin", new byte[10 * 1024 * 1024 + 1]) // 10 MB + 1 byte
+        };
+        SetupMockTsa();
+
+        var act = () => _service.CreateExtendedAsync(files);
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*exceeds the maximum allowed size*");
+    }
+
+    [Fact]
+    public void Extract_ExceedingMaxFileSize_ShouldThrow()
+    {
+        // Build a container with a data entry that exceeds MaxFileSize
+        var options = new AsicTimestampOptions { MaxFileSize = 5 };
+        var service = new AsicService(_mockTsa, options);
+
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(mimeEntry.Open(), Encoding.UTF8))
+                writer.Write("application/vnd.etsi.asic-s+zip");
+
+            var dataEntry = zip.CreateEntry("test.txt", CompressionLevel.Optimal);
+            using (var stream = dataEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("this content exceeds 5 bytes"));
+
+            var tsEntry = zip.CreateEntry("META-INF/timestamp.tst", CompressionLevel.Optimal);
+            using (var stream = tsEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("FAKE_TOKEN"));
+        }
+
+        var act = () => service.Extract(ms.ToArray());
+        act.Should().Throw<InvalidAsicContainerException>().WithMessage("*exceeds the maximum allowed size*");
+    }
+
+    [Fact]
+    public void Verify_ExceedingMaxFileSize_ShouldReturnInvalid()
+    {
+        // Build a container with a data entry that exceeds MaxFileSize
+        var options = new AsicTimestampOptions { MaxFileSize = 5 };
+        var service = new AsicService(_mockTsa, options);
+
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(mimeEntry.Open(), Encoding.UTF8))
+                writer.Write("application/vnd.etsi.asic-s+zip");
+
+            var dataEntry = zip.CreateEntry("test.txt", CompressionLevel.Optimal);
+            using (var stream = dataEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("this content exceeds 5 bytes"));
+
+            var tsEntry = zip.CreateEntry("META-INF/timestamp.tst", CompressionLevel.Optimal);
+            using (var stream = tsEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("FAKE_TOKEN"));
+        }
+
+        // Verify catches the exception and returns a failed result
+        var result = service.Verify(ms.ToArray());
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("exceeds the maximum allowed size");
+    }
+
+    [Fact]
+    public void ExtractAll_ExceedingMaxFileSize_ShouldThrow()
+    {
+        // Build an ASiC-E-style container with an oversized entry
+        var options = new AsicTimestampOptions { MaxFileSize = 5 };
+        var service = new AsicService(_mockTsa, options);
+
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(mimeEntry.Open(), Encoding.UTF8))
+                writer.Write("application/vnd.etsi.asic-s+zip");
+
+            var dataEntry = zip.CreateEntry("large.txt", CompressionLevel.Optimal);
+            using (var stream = dataEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("this content exceeds 5 bytes"));
+
+            var tsEntry = zip.CreateEntry("META-INF/timestamp.tst", CompressionLevel.Optimal);
+            using (var stream = tsEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("FAKE_TOKEN"));
+        }
+
+        var act = () => service.ExtractAll(ms.ToArray());
+        act.Should().Throw<InvalidAsicContainerException>().WithMessage("*exceeds the maximum allowed size*");
     }
 
     #region ASiC-E (Extended) Tests
