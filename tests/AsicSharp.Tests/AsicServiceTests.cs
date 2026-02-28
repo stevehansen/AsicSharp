@@ -401,7 +401,7 @@ public class AsicServiceTests
     }
 
     [Fact]
-    public void RenewAsync_WithNoTimestamp_ShouldThrow()
+    public async Task RenewAsync_WithNoTimestamp_ShouldThrow()
     {
         // Build a container without a timestamp
         using var ms = new MemoryStream();
@@ -417,7 +417,7 @@ public class AsicServiceTests
         }
 
         var act = () => _service.RenewAsync(ms.ToArray());
-        act.Should().ThrowAsync<InvalidAsicContainerException>();
+        await act.Should().ThrowAsync<InvalidAsicContainerException>();
     }
 
     [Fact]
