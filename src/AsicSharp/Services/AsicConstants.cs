@@ -49,4 +49,10 @@ internal static class AsicConstants
 
     /// <summary>MIME type for timestamp tokens.</summary>
     public const string TimestampMimeType = "application/vnd.etsi.timestamp-token";
+
+    /// <summary>Prefix for archive (renewal) timestamp filenames (e.g., timestamp-002.tst).</summary>
+    public const string ArchiveTimestampPrefix = "timestamp-";
+
+    /// <summary>File extension for timestamp tokens.</summary>
+    public const string TimestampExtension = ".tst";
 }

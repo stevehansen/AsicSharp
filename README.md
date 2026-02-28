@@ -70,6 +70,11 @@ var verification = asicService.VerifyFile("contract.pdf.asics");
 Console.WriteLine($"Valid: {verification.IsValid}");
 Console.WriteLine($"Timestamp: {verification.Timestamp:O}");
 Console.WriteLine($"TSA: {verification.TsaCertificate?.Subject}");
+
+// Renew timestamp for long-term archival (adds archive timestamp per ETSI EN 319 162-1 §5.4)
+var renewed = await asicService.RenewFileAsync("contract.pdf.asics");
+File.WriteAllBytes("contract.pdf.asics", renewed.ContainerBytes);
+Console.WriteLine($"Renewed at: {renewed.Timestamp:O}");
 ```
 
 ### With Dependency Injection
@@ -135,6 +140,10 @@ asicts stamp contract.pdf annex.pdf terms.txt
 asicts verify contract.pdf.asics
 asicts verify bundle.asice --verbose
 
+# Renew timestamp for long-term archival
+asicts renew contract.pdf.asics
+asicts renew bundle.asice --tsa http://timestamp.sectigo.com
+
 # Extract files from any container
 asicts extract contract.pdf.asics --output ./extracted/
 asicts extract bundle.asice --output ./extracted/
@@ -172,6 +181,7 @@ document.pdf.asics (ZIP)
 ├── document.pdf                      → Your original file (unchanged)
 └── META-INF/
     ├── timestamp.tst                 → RFC 3161 timestamp token (covers the data file)
+    ├── timestamp-002.tst             → (After renewal) Archive timestamp covering timestamp.tst
     └── signature.p7s                 → (Optional) CMS/CAdES signature
 ```
 
@@ -185,10 +195,23 @@ bundle.asice (ZIP)
 └── META-INF/
     ├── ASiCManifest.xml              → Lists all files with their digests
     ├── timestamp.tst                 → RFC 3161 timestamp token (covers the manifest)
+    ├── timestamp-002.tst             → (After renewal) Archive timestamp covering timestamp.tst
     └── signature.p7s                 → (Optional) CMS/CAdES signature
 ```
 
 The timestamp in ASiC-E covers the ASiCManifest XML, which in turn contains cryptographic digests of every data file — so all files are transitively timestamped.
+
+## Timestamp Renewal for Long-Term Archival
+
+Timestamp tokens have a validity period tied to the TSA certificate's lifetime (typically 5-10 years). For long-term archival, renew the timestamp before the original TSA certificate expires. Per ETSI EN 319 162-1 §5.4, each archive timestamp covers the previous token's bytes, creating a chain:
+
+```
+timestamp.tst      → Covers data (or manifest)
+timestamp-002.tst  → Covers timestamp.tst bytes
+timestamp-003.tst  → Covers timestamp-002.tst bytes
+```
+
+Verification walks the full chain, ensuring each link is valid. The original timestamp proves when the data existed; renewal timestamps extend the proof indefinitely.
 
 ## Optional: Signing with Your Own Certificate
 

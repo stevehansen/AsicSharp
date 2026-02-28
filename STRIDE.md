@@ -1,6 +1,6 @@
 # AsicSharp - STRIDE Threat Model
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** 2026-02-28
 **Next Review:** 2029-02-28
 
@@ -112,6 +112,7 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Simp
 | T-4 | TSA response interception (HTTP) | TSA URLs use HTTP; MITM could intercept and modify responses | 1 (Very Low) | 3 (High) | 3 | RFC 3161 TSA responses are cryptographically signed — a modified response fails `ProcessResponse` validation regardless of transport. HTTP is standard for TSAs (security is in the signature, not the transport). |
 | T-5 | XXE/XML bomb in ASiCManifest | Malicious ASiC-E container contains crafted ASiCManifest.xml with external entity references or recursive expansion | 1 (Very Low) | 3 (High) | 3 | **Mitigated.** `XDocument.Parse()` in .NET does not process DTDs or resolve external entities by default. XML bomb expansion is bounded by .NET's default XML reader limits. |
 | T-6 | ASiCManifest digest mismatch | Attacker modifies a data file in an ASiC-E container without updating the manifest | 2 (Low) | 3 (High) | 6 | **Mitigated.** Verification recomputes each file's digest and compares against the manifest. The timestamp binds to the manifest bytes, so manifest changes are also detected. |
+| T-7 | Archive timestamp chain tampering | Attacker modifies or replaces an intermediate archive timestamp token in a renewal chain | 1 (Very Low) | 3 (High) | 3 | **Mitigated.** Each archive timestamp covers the previous token's raw bytes. Chain verification walks all tokens in order and verifies each hash link. Any modification breaks the chain. |
 
 **Countermeasures in place:**
 - SHA-256 hash binding between data and timestamp token
@@ -121,6 +122,7 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Simp
 - Random nonce included in timestamp requests (replay protection)
 - `Rfc3161TimestampRequest.ProcessResponse` validates response integrity and nonce
 - ASiC-E digest verification: each file's hash verified against ASiCManifest, manifest hash verified against timestamp
+- Archive timestamp chain verification: each renewal token's hash verified against the previous token's bytes
 - `XDocument.Parse()` used for manifest parsing (safe XML defaults, no DTD processing)
 
 ### R — Repudiation
@@ -156,6 +158,7 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Simp
 | D-1 | TSA unavailability | TSA server is down or rate-limits requests | 2 (Low) | 2 (Medium) | 4 | Configurable timeout (default 30s). `HttpRequestException` thrown on failure. Caller can retry or use alternate TSA. |
 | D-2 | ZIP bomb in container | Malicious ASiC-S with highly compressed entry causes memory exhaustion during verification | 1 (Very Low) | 3 (High) | 3 | Container bytes are fully loaded into memory via `byte[]` API. .NET `ZipArchive` provides basic protection against unbounded expansion. |
 | D-3 | Large file processing | Very large input file(s) cause memory pressure (all data loaded via `ReadAllBytes`). ASiC-E amplifies this with multiple files. | 2 (Low) | 2 (Medium) | 4 | **Mitigated.** Configurable `MaxFileSize` option (default 10 MB) rejects oversized files before processing. Set to `null` to disable. Stream-based `CreateAsync(Stream, ...)` overload also available for ASiC-S. |
+| D-4 | Unbounded timestamp chain growth | Repeated `RenewAsync` calls grow the container by one .tst entry each time | 1 (Very Low) | 1 (Low) | 1 | Each archive timestamp is small (~2-4 KB). Renewal is an explicit caller action, not automatic. Container size growth is negligible over typical renewal cycles (years). |
 
 **Countermeasures in place:**
 - Configurable HTTP timeout (default 30 seconds)
@@ -204,7 +207,7 @@ None — all previously high-priority threats have been mitigated.
 
 | Category | Implementation |
 |----------|---------------|
-| **Cryptography** | SHA-256/384/512 via .NET APIs; RFC 3161 timestamp tokens with nonce replay protection; CMS/CAdES detached signatures |
+| **Cryptography** | SHA-256/384/512 via .NET APIs; RFC 3161 timestamp tokens with nonce replay protection; CMS/CAdES detached signatures; archive timestamp chain verification for renewal |
 | **Input Validation** | `ValidateFileName()` on creation (rejects duplicates for ASiC-E); `Path.GetFileName()` on extraction; null/empty checks on all public APIs; file existence checks |
 | **XML Processing** | `XDocument.Parse()` for ASiCManifest (safe defaults: no DTD, no external entities); digest verification per `DataObjectReference` |
 | **Certificate Validation** | `Rfc3161TimestampToken.VerifySignatureForHash`; `SignedCms.CheckSignature` with chain validation |
@@ -222,6 +225,7 @@ None — all previously high-priority threats have been mitigated.
 | 1.0 | 2026-02-28 | Initial analysis | Initial STRIDE threat model |
 | 1.1 | 2026-02-28 | Post-fix update | T-1/E-1 mitigated (path traversal fix); T-3 mitigated (nonce support implemented) |
 | 1.2 | 2026-02-28 | ASiC-E support | Added T-5 (XXE/XML bomb), T-6 (manifest digest mismatch), updated D-3 for multi-file; added XML processing controls |
+| 1.3 | 2026-02-28 | Timestamp renewal | Added T-7 (archive timestamp chain tampering), D-4 (unbounded chain growth); updated cryptography controls for chain verification |
 
 ---
 

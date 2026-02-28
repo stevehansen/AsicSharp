@@ -17,6 +17,7 @@ internal static class Program
         {
             BuildStampCommand(),
             BuildVerifyCommand(),
+            BuildRenewCommand(),
             BuildExtractCommand(),
             BuildInfoCommand()
         };
@@ -176,8 +177,23 @@ internal static class Program
                 Console.WriteLine($"  Timestamp:  {result.Timestamp:O}");
                 Console.WriteLine($"  Hash:       {result.DataHash} ({result.HashAlgorithm})");
 
-                if (result.TsaCertificate != null)
-                    Console.WriteLine($"  TSA Cert:   {result.TsaCertificate.Subject}");
+                if (result.TimestampChain is { Count: > 1 })
+                {
+                    Console.WriteLine();
+                    Console.WriteLine("  Timestamp chain:");
+                    foreach (var entry in result.TimestampChain)
+                    {
+                        var icon = entry.IsValid ? "✓" : "✗";
+                        Console.WriteLine($"    {icon} [{entry.Order}] {entry.Timestamp:O} ({System.IO.Path.GetFileName(entry.EntryName)})");
+                        if (entry.TsaCertificate != null)
+                            Console.WriteLine($"          TSA: {entry.TsaCertificate.Subject}");
+                    }
+                }
+                else
+                {
+                    if (result.TsaCertificate != null)
+                        Console.WriteLine($"  TSA Cert:   {result.TsaCertificate.Subject}");
+                }
 
                 if (result.SigningCertificate != null)
                     Console.WriteLine($"  Signed by:  {result.SigningCertificate.Subject}");
@@ -187,6 +203,75 @@ internal static class Program
             else
             {
                 Console.Error.WriteLine($"✗ INVALID: {result.Error}");
+                ctx.ExitCode = 1;
+            }
+        });
+
+        return cmd;
+    }
+
+    private static Command BuildRenewCommand()
+    {
+        var fileArg = new Argument<FileInfo>("container", "The .asics/.asice container file to renew");
+        var tsaOption = new Option<string[]>(
+            ["--tsa", "-t"],
+            "Timestamp Authority URL(s) — first is primary, rest are fallbacks (default: DigiCert)")
+        {
+            Arity = ArgumentArity.OneOrMore
+        };
+        var algorithmOption = new Option<string>(
+            ["--algorithm", "-a"],
+            () => "SHA256",
+            "Hash algorithm (SHA256, SHA384, SHA512)");
+
+        var cmd = new Command("renew", "Renew the timestamp on an ASiC container for long-term archival")
+        {
+            fileArg, tsaOption, algorithmOption
+        };
+
+        cmd.SetHandler(async (InvocationContext ctx) =>
+        {
+            var file = ctx.ParseResult.GetValueForArgument(fileArg);
+            var tsaUrls = ctx.ParseResult.GetValueForOption(tsaOption);
+            var algorithm = ctx.ParseResult.GetValueForOption(algorithmOption)!;
+
+            if (!file.Exists)
+            {
+                Console.Error.WriteLine($"Error: File not found: {file.FullName}");
+                ctx.ExitCode = 1;
+                return;
+            }
+
+            var hashAlgorithm = algorithm.ToUpperInvariant() switch
+            {
+                "SHA256" => System.Security.Cryptography.HashAlgorithmName.SHA256,
+                "SHA384" => System.Security.Cryptography.HashAlgorithmName.SHA384,
+                "SHA512" => System.Security.Cryptography.HashAlgorithmName.SHA512,
+                _ => throw new ArgumentException($"Unsupported algorithm: {algorithm}")
+            };
+
+            using var services = BuildServiceProvider(tsaUrls, hashAlgorithm);
+            var asicService = services.GetRequiredService<IAsicService>();
+
+            Console.WriteLine($"Renewing:   {file.FullName}");
+            Console.WriteLine($"TSA:        {string.Join(", ", tsaUrls ?? [WellKnownTsa.DigiCert])}");
+            Console.WriteLine($"Algorithm:  {hashAlgorithm.Name}");
+            Console.WriteLine();
+
+            try
+            {
+                var result = await asicService.RenewFileAsync(file.FullName, ctx.GetCancellationToken());
+
+                File.WriteAllBytes(file.FullName, result.ContainerBytes);
+
+                Console.WriteLine($"✓ Renewed:    {result.Timestamp:O}");
+                Console.WriteLine($"  Token hash: {result.DataHash}");
+                Console.WriteLine($"  Output:     {file.FullName}");
+                Console.WriteLine($"  Size:       {result.ContainerBytes.Length:N0} bytes");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error: {ex.Message}");
                 ctx.ExitCode = 1;
             }
         });

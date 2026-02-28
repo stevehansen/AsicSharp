@@ -60,6 +60,36 @@ public sealed class AsicVerifyResult
 
     /// <summary>Detailed verification steps performed.</summary>
     public IReadOnlyList<VerificationStep> Steps { get; init; } = [];
+
+    /// <summary>
+    /// Timestamp chain entries when the container has been renewed (2+ timestamps).
+    /// Null for single-timestamp containers (backward compatible).
+    /// </summary>
+    public IReadOnlyList<TimestampChainEntry>? TimestampChain { get; init; }
+}
+
+/// <summary>
+/// A single entry in a timestamp renewal chain.
+/// </summary>
+public sealed class TimestampChainEntry
+{
+    /// <summary>ZIP entry path (e.g., META-INF/timestamp.tst or META-INF/timestamp-002.tst).</summary>
+    public required string EntryName { get; init; }
+
+    /// <summary>UTC timestamp from this token.</summary>
+    public required DateTimeOffset Timestamp { get; init; }
+
+    /// <summary>TSA certificate that signed this token, if available.</summary>
+    public X509Certificate2? TsaCertificate { get; init; }
+
+    /// <summary>Hash algorithm used in this token.</summary>
+    public string? HashAlgorithm { get; init; }
+
+    /// <summary>Whether this link in the chain verified successfully.</summary>
+    public required bool IsValid { get; init; }
+
+    /// <summary>Position in the chain (1 = original timestamp).</summary>
+    public required int Order { get; init; }
 }
 
 /// <summary>

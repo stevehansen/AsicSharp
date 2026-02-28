@@ -334,6 +334,143 @@ public class AsicServiceTests
         act.Should().Throw<InvalidAsicContainerException>().WithMessage("*exceeds the maximum allowed size*");
     }
 
+    #region Timestamp Renewal Tests
+
+    [Fact]
+    public async Task RenewAsync_ShouldAddArchiveTimestampToContainer()
+    {
+        // Arrange — create a container first
+        var data = Encoding.UTF8.GetBytes("Hello, renewal!");
+        SetupMockTsa();
+        var createResult = await _service.CreateAsync(data, "test.txt");
+
+        // Act
+        var renewResult = await _service.RenewAsync(createResult.ContainerBytes);
+
+        // Assert — both timestamp files should exist
+        using var zip = new ZipArchive(new MemoryStream(renewResult.ContainerBytes), ZipArchiveMode.Read);
+        zip.GetEntry("META-INF/timestamp.tst").Should().NotBeNull();
+        zip.GetEntry("META-INF/timestamp-002.tst").Should().NotBeNull();
+        renewResult.Timestamp.Should().NotBe(default);
+        renewResult.DataHash.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task RenewAsync_ShouldPreserveOriginalContainerContents()
+    {
+        // Arrange
+        var data = Encoding.UTF8.GetBytes("Preserved content");
+        SetupMockTsa();
+        var createResult = await _service.CreateAsync(data, "document.txt");
+
+        // Act
+        var renewResult = await _service.RenewAsync(createResult.ContainerBytes);
+
+        // Assert — data file should be unchanged
+        var (fileName, extractedData) = _service.Extract(renewResult.ContainerBytes);
+        fileName.Should().Be("document.txt");
+        extractedData.Should().BeEquivalentTo(data);
+    }
+
+    [Fact]
+    public async Task RenewAsync_MultipleRenewals_ShouldIncrementEntryNames()
+    {
+        // Arrange
+        var data = Encoding.UTF8.GetBytes("Multiple renewals");
+        SetupMockTsa();
+        var createResult = await _service.CreateAsync(data, "test.txt");
+
+        // Act — renew 3 times
+        var renew1 = await _service.RenewAsync(createResult.ContainerBytes);
+        var renew2 = await _service.RenewAsync(renew1.ContainerBytes);
+        var renew3 = await _service.RenewAsync(renew2.ContainerBytes);
+
+        // Assert — all 4 timestamps should exist with correct names
+        using var zip = new ZipArchive(new MemoryStream(renew3.ContainerBytes), ZipArchiveMode.Read);
+        zip.GetEntry("META-INF/timestamp.tst").Should().NotBeNull();
+        zip.GetEntry("META-INF/timestamp-002.tst").Should().NotBeNull();
+        zip.GetEntry("META-INF/timestamp-003.tst").Should().NotBeNull();
+        zip.GetEntry("META-INF/timestamp-004.tst").Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task RenewAsync_WithEmptyBytes_ShouldThrow()
+    {
+        var act = () => _service.RenewAsync(Array.Empty<byte>());
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public void RenewAsync_WithNoTimestamp_ShouldThrow()
+    {
+        // Build a container without a timestamp
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(mimeEntry.Open(), Encoding.UTF8))
+                writer.Write("application/vnd.etsi.asic-s+zip");
+
+            var dataEntry = zip.CreateEntry("test.txt", CompressionLevel.Optimal);
+            using (var stream = dataEntry.Open())
+                stream.Write(Encoding.UTF8.GetBytes("no timestamp"));
+        }
+
+        var act = () => _service.RenewAsync(ms.ToArray());
+        act.Should().ThrowAsync<InvalidAsicContainerException>();
+    }
+
+    [Fact]
+    public async Task RenewAsync_Stream_ShouldWork()
+    {
+        // Arrange
+        var data = Encoding.UTF8.GetBytes("Stream renewal");
+        SetupMockTsa();
+        var createResult = await _service.CreateAsync(data, "test.txt");
+
+        // Act
+        using var stream = new MemoryStream(createResult.ContainerBytes);
+        var renewResult = await _service.RenewAsync(stream);
+
+        // Assert
+        using var zip = new ZipArchive(new MemoryStream(renewResult.ContainerBytes), ZipArchiveMode.Read);
+        zip.GetEntry("META-INF/timestamp.tst").Should().NotBeNull();
+        zip.GetEntry("META-INF/timestamp-002.tst").Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task RenewAsync_PreservesMimetypeFirst()
+    {
+        // Arrange
+        var data = Encoding.UTF8.GetBytes("Mimetype ordering");
+        SetupMockTsa();
+        var createResult = await _service.CreateAsync(data, "test.txt");
+
+        // Act
+        var renewResult = await _service.RenewAsync(createResult.ContainerBytes);
+
+        // Assert — mimetype should still be the first entry
+        using var zip = new ZipArchive(new MemoryStream(renewResult.ContainerBytes), ZipArchiveMode.Read);
+        zip.Entries[0].FullName.Should().Be("mimetype");
+    }
+
+    [Fact]
+    public async Task Verify_SingleTimestamp_TimestampChainShouldBeNull()
+    {
+        // Arrange
+        var data = Encoding.UTF8.GetBytes("Single timestamp");
+        SetupMockTsa();
+        var createResult = await _service.CreateAsync(data, "test.txt");
+
+        // Act
+        var result = _service.Verify(createResult.ContainerBytes);
+
+        // Assert — no chain for single-timestamp containers
+        result.TimestampChain.Should().BeNull();
+    }
+
+    #endregion
+
     #region ASiC-E (Extended) Tests
 
     [Fact]

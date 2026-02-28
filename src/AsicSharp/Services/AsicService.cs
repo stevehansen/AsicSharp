@@ -88,6 +88,25 @@ public interface IAsicService
     /// <param name="containerBytes">The raw ASiC container bytes.</param>
     /// <returns>List of (FileName, Data) tuples for all data files.</returns>
     IReadOnlyList<(string FileName, byte[] Data)> ExtractAll(byte[] containerBytes);
+
+    /// <summary>
+    /// Renew the timestamp on an existing ASiC container by adding an archive timestamp
+    /// that covers the most recent timestamp token. Per ETSI EN 319 162-1 §5.4.
+    /// </summary>
+    /// <param name="containerBytes">The raw ASiC container bytes.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The result containing the updated container bytes and metadata.</returns>
+    Task<AsicCreateResult> RenewAsync(byte[] containerBytes, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Renew the timestamp on an existing ASiC container from a stream.
+    /// </summary>
+    Task<AsicCreateResult> RenewAsync(Stream container, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Renew the timestamp on an existing ASiC container file, writing the result back to disk.
+    /// </summary>
+    Task<AsicCreateResult> RenewFileAsync(string filePath, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -252,57 +271,94 @@ public sealed class AsicService : IAsicService
                 Detail = $"{dataEntry.FullName} ({dataBytes.Length} bytes)"
             });
 
-            // Step 4: Find and verify timestamp
-            var tsEntry = zip.GetEntry(AsicConstants.TimestampEntryPath);
-            if (tsEntry == null)
-            {
-                // Try any .tst file in META-INF
-                tsEntry = zip.Entries.FirstOrDefault(e =>
-                    e.FullName.StartsWith(AsicConstants.MetaInfDir + "/", StringComparison.OrdinalIgnoreCase) &&
-                    e.FullName.EndsWith(".tst", StringComparison.OrdinalIgnoreCase));
-            }
+            // Step 4: Find and verify timestamp(s) — supports renewal chains
+            var allTsEntries = GetTimestampEntries(zip)
+                .OrderBy(e => e.FullName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             DateTimeOffset? timestamp = null;
             X509Certificate2? tsaCert = null;
             string? hashAlgorithm = null;
+            List<TimestampChainEntry>? chainEntries = null;
 
-            if (tsEntry != null)
+            if (allTsEntries.Count > 0)
             {
-                var tsTokenBytes = ReadEntryBytes(tsEntry);
-                var tsVerification = VerifyTimestampToken(dataBytes, tsTokenBytes);
+                bool isChain = allTsEntries.Count > 1;
+                if (isChain)
+                    chainEntries = new List<TimestampChainEntry>();
 
-                steps.Add(new VerificationStep
-                {
-                    Name = "Timestamp token decode",
-                    Passed = tsVerification.Decoded,
-                    Detail = tsVerification.Decoded
-                        ? $"Token decoded, timestamp: {tsVerification.Timestamp:O}"
-                        : tsVerification.Error
-                });
+                byte[] previousBytes = dataBytes;
 
-                if (tsVerification.Decoded)
+                for (int i = 0; i < allTsEntries.Count; i++)
                 {
+                    var tsEntry = allTsEntries[i];
+                    var tsTokenBytes = ReadEntryBytes(tsEntry);
+                    var order = i + 1;
+                    var stepPrefix = isChain ? $"Timestamp [{order}/{allTsEntries.Count}] ({Path.GetFileName(tsEntry.FullName)}) " : "";
+
+                    var tsVerification = VerifyTimestampToken(previousBytes, tsTokenBytes);
+
                     steps.Add(new VerificationStep
                     {
-                        Name = "Timestamp signature",
-                        Passed = tsVerification.SignatureValid,
-                        Detail = tsVerification.SignatureValid
-                            ? $"Valid, signed by: {tsVerification.TsaCertificate?.Subject}"
+                        Name = $"{stepPrefix}Timestamp token decode".TrimStart(),
+                        Passed = tsVerification.Decoded,
+                        Detail = tsVerification.Decoded
+                            ? $"Token decoded, timestamp: {tsVerification.Timestamp:O}"
                             : tsVerification.Error
                     });
 
-                    steps.Add(new VerificationStep
+                    if (tsVerification.Decoded)
                     {
-                        Name = "Data hash match",
-                        Passed = tsVerification.HashMatches,
-                        Detail = tsVerification.HashMatches
-                            ? "Hash in timestamp matches data file"
-                            : "Hash mismatch — data has been modified"
-                    });
+                        steps.Add(new VerificationStep
+                        {
+                            Name = $"{stepPrefix}Timestamp signature".TrimStart(),
+                            Passed = tsVerification.SignatureValid,
+                            Detail = tsVerification.SignatureValid
+                                ? $"Valid, signed by: {tsVerification.TsaCertificate?.Subject}"
+                                : tsVerification.Error
+                        });
 
-                    timestamp = tsVerification.Timestamp;
-                    tsaCert = tsVerification.TsaCertificate;
-                    hashAlgorithm = tsVerification.HashAlgorithm;
+                        var hashLabel = i == 0 ? "Data hash match" : "Previous token hash match";
+                        steps.Add(new VerificationStep
+                        {
+                            Name = isChain ? $"{stepPrefix}{hashLabel}".TrimStart() : hashLabel,
+                            Passed = tsVerification.HashMatches,
+                            Detail = tsVerification.HashMatches
+                                ? (i == 0 ? "Hash in timestamp matches data file" : "Hash in timestamp matches previous token")
+                                : (i == 0 ? "Hash mismatch — data has been modified" : "Hash mismatch — previous token has been modified")
+                        });
+
+                        // First token provides the original timestamp (when data was proven to exist)
+                        if (i == 0)
+                        {
+                            timestamp = tsVerification.Timestamp;
+                            tsaCert = tsVerification.TsaCertificate;
+                            hashAlgorithm = tsVerification.HashAlgorithm;
+                        }
+
+                        chainEntries?.Add(new TimestampChainEntry
+                        {
+                            EntryName = tsEntry.FullName,
+                            Timestamp = tsVerification.Timestamp!.Value,
+                            TsaCertificate = tsVerification.TsaCertificate,
+                            HashAlgorithm = tsVerification.HashAlgorithm,
+                            IsValid = tsVerification.SignatureValid && tsVerification.HashMatches,
+                            Order = order
+                        });
+                    }
+                    else
+                    {
+                        chainEntries?.Add(new TimestampChainEntry
+                        {
+                            EntryName = tsEntry.FullName,
+                            Timestamp = default,
+                            IsValid = false,
+                            Order = order
+                        });
+                    }
+
+                    // Next token in chain is verified against this token's bytes
+                    previousBytes = tsTokenBytes;
                 }
             }
             else
@@ -355,6 +411,7 @@ public sealed class AsicService : IAsicService
                 HashAlgorithm = hashAlgorithm ?? _options.HashAlgorithm.Name,
                 DataHash = hashHex,
                 Steps = steps,
+                TimestampChain = chainEntries,
                 Error = allPassed ? null : string.Join("; ", steps.Where(s => !s.Passed).Select(s => s.Detail))
             };
         }
@@ -491,6 +548,81 @@ public sealed class AsicService : IAsicService
         }
 
         return result;
+    }
+
+    public async Task<AsicCreateResult> RenewAsync(
+        byte[] containerBytes,
+        CancellationToken cancellationToken = default)
+    {
+        if (containerBytes == null || containerBytes.Length == 0)
+            throw new ArgumentException("Container bytes cannot be null or empty.", nameof(containerBytes));
+
+        // Open ZIP and find all timestamp entries
+        List<ZipArchiveEntry> tsEntries;
+        byte[] latestTokenBytes;
+        string latestEntryName;
+
+        using (var zip = OpenZip(containerBytes))
+        {
+            tsEntries = GetTimestampEntries(zip);
+            if (tsEntries.Count == 0)
+                throw new InvalidAsicContainerException("No timestamp token found in container — cannot renew.");
+
+            // Sort by name (lexicographic gives correct chain order)
+            tsEntries = tsEntries.OrderBy(e => e.FullName, StringComparer.OrdinalIgnoreCase).ToList();
+
+            var latestEntry = tsEntries[^1];
+            latestEntryName = latestEntry.FullName;
+            latestTokenBytes = ReadEntryBytes(latestEntry);
+        }
+
+        _logger.LogDebug("Renewing timestamp on container, latest token: {Entry}", latestEntryName);
+
+        // Hash the latest token bytes and request a new timestamp
+        var hash = ComputeHash(latestTokenBytes, _options.HashAlgorithm);
+        var hashHex = ToHexString(hash);
+
+        var tsResult = await _tsaClient.RequestTimestampAsync(
+            hash, _options.HashAlgorithm, cancellationToken);
+
+        // Determine the next entry name
+        var nextEntryName = GetNextTimestampEntryName(tsEntries);
+
+        // Add the new timestamp to the container
+        var updatedContainer = AddTimestampToContainer(containerBytes, nextEntryName, tsResult.TokenBytes);
+
+        _logger.LogInformation(
+            "Renewed timestamp: added {Entry}, timestamp {Timestamp:O}",
+            nextEntryName, tsResult.Timestamp);
+
+        return new AsicCreateResult
+        {
+            ContainerBytes = updatedContainer,
+            Timestamp = tsResult.Timestamp,
+            HashAlgorithm = _options.HashAlgorithm.Name!,
+            DataHash = hashHex,
+            TimestampAuthorityUrl = tsResult.TimestampAuthorityUrl ?? _options.TimestampAuthorityUrl
+        };
+    }
+
+    public async Task<AsicCreateResult> RenewAsync(
+        Stream container,
+        CancellationToken cancellationToken = default)
+    {
+        using var ms = new MemoryStream();
+        await container.CopyToAsync(ms, 81920, cancellationToken);
+        return await RenewAsync(ms.ToArray(), cancellationToken);
+    }
+
+    public async Task<AsicCreateResult> RenewFileAsync(
+        string filePath,
+        CancellationToken cancellationToken = default)
+    {
+        if (!File.Exists(filePath))
+            throw new FileNotFoundException("Container file not found.", filePath);
+
+        var containerBytes = File.ReadAllBytes(filePath);
+        return await RenewAsync(containerBytes, cancellationToken);
     }
 
     #region Private methods
@@ -870,53 +1002,92 @@ public sealed class AsicService : IAsicService
             });
         }
 
-        // Step 5: Verify timestamp covers the manifest
-        var tsEntry = zip.GetEntry(AsicConstants.TimestampEntryPath)
-            ?? zip.Entries.FirstOrDefault(e =>
-                e.FullName.StartsWith(AsicConstants.MetaInfDir + "/", StringComparison.OrdinalIgnoreCase) &&
-                e.FullName.EndsWith(".tst", StringComparison.OrdinalIgnoreCase));
+        // Step 5: Verify timestamp(s) cover the manifest — supports renewal chains
+        var allTsEntries = GetTimestampEntries(zip)
+            .OrderBy(e => e.FullName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         DateTimeOffset? timestamp = null;
         X509Certificate2? tsaCert = null;
         string? hashAlgorithm = null;
+        List<TimestampChainEntry>? chainEntries = null;
 
-        if (tsEntry != null)
+        if (allTsEntries.Count > 0)
         {
-            var tsTokenBytes = ReadEntryBytes(tsEntry);
-            var tsVerification = VerifyTimestampToken(manifestBytes, tsTokenBytes);
+            bool isChain = allTsEntries.Count > 1;
+            if (isChain)
+                chainEntries = new List<TimestampChainEntry>();
 
-            steps.Add(new VerificationStep
-            {
-                Name = "Timestamp token decode",
-                Passed = tsVerification.Decoded,
-                Detail = tsVerification.Decoded
-                    ? $"Token decoded, timestamp: {tsVerification.Timestamp:O}"
-                    : tsVerification.Error
-            });
+            byte[] previousBytes = manifestBytes;
 
-            if (tsVerification.Decoded)
+            for (int i = 0; i < allTsEntries.Count; i++)
             {
+                var tsEntry = allTsEntries[i];
+                var tsTokenBytes = ReadEntryBytes(tsEntry);
+                var order = i + 1;
+                var stepPrefix = isChain ? $"Timestamp [{order}/{allTsEntries.Count}] ({Path.GetFileName(tsEntry.FullName)}) " : "";
+
+                var tsVerification = VerifyTimestampToken(previousBytes, tsTokenBytes);
+
                 steps.Add(new VerificationStep
                 {
-                    Name = "Timestamp signature",
-                    Passed = tsVerification.SignatureValid,
-                    Detail = tsVerification.SignatureValid
-                        ? $"Valid, signed by: {tsVerification.TsaCertificate?.Subject}"
+                    Name = $"{stepPrefix}Timestamp token decode".TrimStart(),
+                    Passed = tsVerification.Decoded,
+                    Detail = tsVerification.Decoded
+                        ? $"Token decoded, timestamp: {tsVerification.Timestamp:O}"
                         : tsVerification.Error
                 });
 
-                steps.Add(new VerificationStep
+                if (tsVerification.Decoded)
                 {
-                    Name = "Manifest hash match",
-                    Passed = tsVerification.HashMatches,
-                    Detail = tsVerification.HashMatches
-                        ? "Hash in timestamp matches ASiCManifest.xml"
-                        : "Hash mismatch — manifest has been modified"
-                });
+                    steps.Add(new VerificationStep
+                    {
+                        Name = $"{stepPrefix}Timestamp signature".TrimStart(),
+                        Passed = tsVerification.SignatureValid,
+                        Detail = tsVerification.SignatureValid
+                            ? $"Valid, signed by: {tsVerification.TsaCertificate?.Subject}"
+                            : tsVerification.Error
+                    });
 
-                timestamp = tsVerification.Timestamp;
-                tsaCert = tsVerification.TsaCertificate;
-                hashAlgorithm = tsVerification.HashAlgorithm;
+                    var hashLabel = i == 0 ? "Manifest hash match" : "Previous token hash match";
+                    steps.Add(new VerificationStep
+                    {
+                        Name = isChain ? $"{stepPrefix}{hashLabel}".TrimStart() : hashLabel,
+                        Passed = tsVerification.HashMatches,
+                        Detail = tsVerification.HashMatches
+                            ? (i == 0 ? "Hash in timestamp matches ASiCManifest.xml" : "Hash in timestamp matches previous token")
+                            : (i == 0 ? "Hash mismatch — manifest has been modified" : "Hash mismatch — previous token has been modified")
+                    });
+
+                    if (i == 0)
+                    {
+                        timestamp = tsVerification.Timestamp;
+                        tsaCert = tsVerification.TsaCertificate;
+                        hashAlgorithm = tsVerification.HashAlgorithm;
+                    }
+
+                    chainEntries?.Add(new TimestampChainEntry
+                    {
+                        EntryName = tsEntry.FullName,
+                        Timestamp = tsVerification.Timestamp!.Value,
+                        TsaCertificate = tsVerification.TsaCertificate,
+                        HashAlgorithm = tsVerification.HashAlgorithm,
+                        IsValid = tsVerification.SignatureValid && tsVerification.HashMatches,
+                        Order = order
+                    });
+                }
+                else
+                {
+                    chainEntries?.Add(new TimestampChainEntry
+                    {
+                        EntryName = tsEntry.FullName,
+                        Timestamp = default,
+                        IsValid = false,
+                        Order = order
+                    });
+                }
+
+                previousBytes = tsTokenBytes;
             }
         }
         else
@@ -967,6 +1138,7 @@ public sealed class AsicService : IAsicService
             HashAlgorithm = hashAlgorithm ?? _options.HashAlgorithm.Name,
             DataHash = manifestHashHex,
             Steps = steps,
+            TimestampChain = chainEntries,
             Error = allPassed ? null : string.Join("; ", steps.Where(s => !s.Passed).Select(s => s.Detail))
         };
     }
@@ -1118,6 +1290,66 @@ public sealed class AsicService : IAsicService
             Error = error,
             Steps = steps
         };
+    }
+
+    /// <summary>
+    /// Find all .tst files in META-INF/.
+    /// </summary>
+    private static List<ZipArchiveEntry> GetTimestampEntries(ZipArchive zip)
+    {
+        return zip.Entries
+            .Where(e =>
+                e.FullName.StartsWith(AsicConstants.MetaInfDir + "/", StringComparison.OrdinalIgnoreCase) &&
+                e.FullName.EndsWith(AsicConstants.TimestampExtension, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Determine the next archive timestamp entry name based on existing entries.
+    /// timestamp.tst → timestamp-002.tst → timestamp-003.tst → ...
+    /// </summary>
+    private static string GetNextTimestampEntryName(List<ZipArchiveEntry> tsEntries)
+    {
+        if (tsEntries.Count == 1 &&
+            string.Equals(tsEntries[0].FullName, AsicConstants.TimestampEntryPath, StringComparison.OrdinalIgnoreCase))
+        {
+            // First renewal: timestamp.tst → timestamp-002.tst
+            return AsicConstants.MetaInfDir + "/" + AsicConstants.ArchiveTimestampPrefix + "002" + AsicConstants.TimestampExtension;
+        }
+
+        // Find the highest number in existing entries
+        int maxNumber = 1;
+        foreach (var entry in tsEntries)
+        {
+            var fileName = Path.GetFileNameWithoutExtension(entry.FullName);
+            if (fileName.StartsWith(AsicConstants.ArchiveTimestampPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var numberPart = fileName.Substring(AsicConstants.ArchiveTimestampPrefix.Length);
+                if (int.TryParse(numberPart, out var number) && number > maxNumber)
+                    maxNumber = number;
+            }
+        }
+
+        var nextNumber = maxNumber + 1;
+        return AsicConstants.MetaInfDir + "/" + AsicConstants.ArchiveTimestampPrefix + nextNumber.ToString("D3", System.Globalization.CultureInfo.InvariantCulture) + AsicConstants.TimestampExtension;
+    }
+
+    /// <summary>
+    /// Add a new timestamp entry to an existing container using ZipArchiveMode.Update.
+    /// </summary>
+    private static byte[] AddTimestampToContainer(byte[] containerBytes, string entryName, byte[] tokenBytes)
+    {
+        using var ms = new MemoryStream();
+        ms.Write(containerBytes, 0, containerBytes.Length);
+
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Update, leaveOpen: true))
+        {
+            var entry = zip.CreateEntry(entryName, CompressionLevel.Optimal);
+            using var stream = entry.Open();
+            stream.Write(tokenBytes, 0, tokenBytes.Length);
+        }
+
+        return ms.ToArray();
     }
 
     #endregion

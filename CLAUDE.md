@@ -34,7 +34,7 @@ Three projects in `AsicSharp.sln`:
 Two main services behind interfaces:
 
 - **`ITsaClient` / `TsaClient`** — Sends RFC 3161 timestamp requests to a TSA over HTTP. Uses `Rfc3161TimestampRequest`/`Rfc3161TimestampToken` from `System.Security.Cryptography.Pkcs`. Designed as a typed `HttpClient` for DI.
-- **`IAsicService` / `AsicService`** — Orchestrates container creation and verification. Builds ASiC-S ZIP containers (mimetype entry first, data file, `META-INF/timestamp.tst`, optional `META-INF/signature.p7s`). Verification walks through structured steps returning `AsicVerifyResult` with a list of `VerificationStep`.
+- **`IAsicService` / `AsicService`** — Orchestrates container creation, verification, and renewal. Builds ASiC-S ZIP containers (mimetype entry first, data file, `META-INF/timestamp.tst`, optional `META-INF/signature.p7s`). Supports timestamp renewal for long-term archival (`RenewAsync`) per ETSI EN 319 162-1 §5.4 — adds archive timestamps (`timestamp-002.tst`, `timestamp-003.tst`, etc.) that chain back to the original. Verification walks through structured steps returning `AsicVerifyResult` with a list of `VerificationStep` and optional `TimestampChain`.
 
 Both services have dual constructors: `IOptions<AsicTimestampOptions>` for DI (marked with `[ActivatorUtilitiesConstructor]`) and raw `AsicTimestampOptions` for standalone use.
 
@@ -42,7 +42,7 @@ Both services have dual constructors: `IOptions<AsicTimestampOptions>` for DI (m
 
 - **`AsicTimestampOptions`** (`Configuration/`) — All config: TSA URL, hash algorithm, signing certificate, timeout, nonce policy. Config section name: `"AsicTimestamp"`.
 - **`WellKnownTsa`** — Static constants for common TSA URLs (DigiCert default).
-- **`AsicCreateResult` / `AsicVerifyResult` / `TimestampResult`** (`Models/`) — Immutable result objects with `required init` properties.
+- **`AsicCreateResult` / `AsicVerifyResult` / `TimestampResult` / `TimestampChainEntry`** (`Models/`) — Immutable result objects with `required init` properties. `TimestampChainEntry` represents one link in a renewal chain.
 - **`AsicConstants`** (`Services/`) — Internal constants for ZIP entry names and paths per ETSI spec. Visible to CLI and Tests via `InternalsVisibleTo`.
 - **`ServiceCollectionExtensions`** (`Extensions/`) — `AddAsicSharp()` DI registration with overloads for action-based config and `IConfigurationSection` binding.
 
