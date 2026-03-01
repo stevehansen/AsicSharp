@@ -74,7 +74,7 @@ public sealed class TsaClient : ITsaClient
         if (data == null || data.Length == 0)
             throw new ArgumentException("Data cannot be null or empty.", nameof(data));
 
-        var hash = ComputeHash(data, _options.HashAlgorithm);
+        var hash = AsicCrypto.ComputeHash(data, _options.HashAlgorithm);
         return await RequestTimestampAsync(hash, _options.HashAlgorithm, cancellationToken);
     }
 
@@ -189,9 +189,9 @@ public sealed class TsaClient : ITsaClient
         {
             token.VerifySignatureForHash(hash, hashAlgorithm, out tsaCert);
         }
-        catch
+        catch (CryptographicException ex)
         {
-            // Verification is done separately; we just want the cert here
+            _logger.LogDebug(ex, "Could not extract TSA certificate from timestamp token");
         }
 
         return new TimestampResult
@@ -201,21 +201,6 @@ public sealed class TsaClient : ITsaClient
             TsaCertificate = tsaCert,
             TimestampAuthorityUrl = tsaUrl
         };
-    }
-
-    private static byte[] ComputeHash(byte[] data, HashAlgorithmName algorithmName)
-    {
-        using var algorithm = CreateHashAlgorithm(algorithmName);
-        return algorithm.ComputeHash(data);
-    }
-
-    private static HashAlgorithm CreateHashAlgorithm(HashAlgorithmName name)
-    {
-        if (name == HashAlgorithmName.SHA256) return SHA256.Create();
-        if (name == HashAlgorithmName.SHA384) return SHA384.Create();
-        if (name == HashAlgorithmName.SHA512) return SHA512.Create();
-        if (name == HashAlgorithmName.SHA1) return SHA1.Create();
-        throw new ArgumentException($"Unsupported hash algorithm: {name.Name}", nameof(name));
     }
 
     private static async Task<byte[]> ReadResponseBytesAsync(

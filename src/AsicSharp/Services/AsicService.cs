@@ -107,6 +107,14 @@ public interface IAsicService
     /// Renew the timestamp on an existing ASiC container file, writing the result back to disk.
     /// </summary>
     Task<AsicCreateResult> RenewFileAsync(string filePath, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Determine the container type (ASiC-S, ASiC-E, or not a recognized container).
+    /// This is a lightweight check that does not perform full verification.
+    /// </summary>
+    /// <param name="containerBytes">The raw container bytes.</param>
+    /// <returns>The detected container type.</returns>
+    AsicContainerType GetContainerType(byte[] containerBytes);
 }
 
 /// <summary>
@@ -200,7 +208,11 @@ public sealed class AsicService : IAsicService
         if (!File.Exists(filePath))
             throw new FileNotFoundException("File not found.", filePath);
 
+#if NET8_0_OR_GREATER
+        var data = await File.ReadAllBytesAsync(filePath, cancellationToken);
+#else
         var data = File.ReadAllBytes(filePath);
+#endif
         var fileName = Path.GetFileName(filePath);
         return await CreateAsync(data, fileName, cancellationToken);
     }
@@ -521,7 +533,11 @@ public sealed class AsicService : IAsicService
             if (!File.Exists(filePath))
                 throw new FileNotFoundException("File not found.", filePath);
 
+#if NET8_0_OR_GREATER
+            files.Add((Path.GetFileName(filePath), await File.ReadAllBytesAsync(filePath, cancellationToken)));
+#else
             files.Add((Path.GetFileName(filePath), File.ReadAllBytes(filePath)));
+#endif
         }
 
         return await CreateExtendedAsync(files, cancellationToken);
@@ -621,8 +637,44 @@ public sealed class AsicService : IAsicService
         if (!File.Exists(filePath))
             throw new FileNotFoundException("Container file not found.", filePath);
 
+#if NET8_0_OR_GREATER
+        var containerBytes = await File.ReadAllBytesAsync(filePath, cancellationToken);
+#else
         var containerBytes = File.ReadAllBytes(filePath);
+#endif
         return await RenewAsync(containerBytes, cancellationToken);
+    }
+
+    public AsicContainerType GetContainerType(byte[] containerBytes)
+    {
+        if (containerBytes == null || containerBytes.Length == 0)
+            return AsicContainerType.None;
+
+        try
+        {
+            using var zip = OpenZip(containerBytes);
+
+            var mimeEntry = zip.GetEntry(AsicConstants.MimeTypeEntryName);
+            if (mimeEntry != null)
+            {
+                var mimeType = ReadEntry(mimeEntry).Trim();
+                if (string.Equals(mimeType, AsicConstants.MimeType, StringComparison.OrdinalIgnoreCase))
+                    return AsicContainerType.Simple;
+                if (string.Equals(mimeType, AsicConstants.MimeTypeExtended, StringComparison.OrdinalIgnoreCase))
+                    return AsicContainerType.Extended;
+            }
+
+            // Fallback: check for ASiCManifest.xml presence (ASiC-E indicator)
+            if (zip.GetEntry(AsicConstants.AsicManifestEntryPath) != null)
+                return AsicContainerType.Extended;
+
+            // Has a mimetype entry but unrecognized content, or no mimetype at all
+            return AsicContainerType.None;
+        }
+        catch
+        {
+            return AsicContainerType.None;
+        }
     }
 
     #region Private methods
@@ -1175,19 +1227,7 @@ public sealed class AsicService : IAsicService
     }
 
     private static byte[] ComputeHash(byte[] data, HashAlgorithmName algorithmName)
-    {
-        using var algorithm = CreateHashAlgorithm(algorithmName);
-        return algorithm.ComputeHash(data);
-    }
-
-    private static HashAlgorithm CreateHashAlgorithm(HashAlgorithmName name)
-    {
-        if (name == HashAlgorithmName.SHA256) return SHA256.Create();
-        if (name == HashAlgorithmName.SHA384) return SHA384.Create();
-        if (name == HashAlgorithmName.SHA512) return SHA512.Create();
-        if (name == HashAlgorithmName.SHA1) return SHA1.Create();
-        throw new ArgumentException($"Unsupported hash algorithm: {name.Name}", nameof(name));
-    }
+        => AsicCrypto.ComputeHash(data, algorithmName);
 
     private static HashAlgorithmName OidToHashAlgorithmName(System.Security.Cryptography.Oid oid)
     {
@@ -1197,21 +1237,12 @@ public sealed class AsicService : IAsicService
             "2.16.840.1.101.3.4.2.1" => HashAlgorithmName.SHA256,
             "2.16.840.1.101.3.4.2.2" => HashAlgorithmName.SHA384,
             "2.16.840.1.101.3.4.2.3" => HashAlgorithmName.SHA512,
-            _ => HashAlgorithmName.SHA256 // fallback
+            _ => throw new ArgumentException($"Unrecognized hash algorithm OID: {oid.Value}", nameof(oid))
         };
     }
 
     private static string ToHexString(byte[] bytes)
-    {
-#if NET5_0_OR_GREATER
-        return Convert.ToHexString(bytes).ToLowerInvariant();
-#else
-        var sb = new StringBuilder(bytes.Length * 2);
-        foreach (var b in bytes)
-            sb.Append(b.ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
-        return sb.ToString();
-#endif
-    }
+        => AsicCrypto.ToHexString(bytes);
 
     private static void ValidateFileName(string fileName)
     {
@@ -1221,8 +1252,8 @@ public sealed class AsicService : IAsicService
         if (string.Equals(fileName, AsicConstants.MimeTypeEntryName, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("File name cannot be 'mimetype'.", nameof(fileName));
 
-        if (fileName.StartsWith(AsicConstants.MetaInfDir, StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("File name cannot start with 'META-INF'.", nameof(fileName));
+        if (fileName.Equals(AsicConstants.MetaInfDir, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("File name cannot be 'META-INF'.", nameof(fileName));
     }
 
     private void ValidateFileSize(string fileName, long size)
@@ -1255,7 +1286,7 @@ public sealed class AsicService : IAsicService
         "http://www.w3.org/2001/04/xmldsig-more#sha384" => HashAlgorithmName.SHA384,
         "http://www.w3.org/2001/04/xmlenc#sha512" => HashAlgorithmName.SHA512,
         "http://www.w3.org/2000/09/xmldsig#sha1" => HashAlgorithmName.SHA1,
-        _ => HashAlgorithmName.SHA256
+        _ => throw new ArgumentException($"Unrecognized hash algorithm URI: {uri}", nameof(uri))
     };
 
     private static string GetMimeType(string fileName)

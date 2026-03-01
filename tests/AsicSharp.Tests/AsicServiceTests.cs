@@ -1082,6 +1082,106 @@ public class AsicServiceTests
 
     #endregion
 
+    #region GetContainerType
+
+    [Fact]
+    public async Task GetContainerType_AsicSContainer_ShouldReturnSimple()
+    {
+        var data = Encoding.UTF8.GetBytes("Simple container");
+        SetupMockTsa();
+        var result = await _service.CreateAsync(data, "test.txt");
+
+        _service.GetContainerType(result.ContainerBytes).Should().Be(AsicContainerType.Simple);
+    }
+
+    [Fact]
+    public async Task GetContainerType_AsicEContainer_ShouldReturnExtended()
+    {
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("doc.txt", Encoding.UTF8.GetBytes("Extended container"))
+        };
+        SetupMockTsa();
+        var result = await _service.CreateExtendedAsync(files);
+
+        _service.GetContainerType(result.ContainerBytes).Should().Be(AsicContainerType.Extended);
+    }
+
+    [Fact]
+    public void GetContainerType_RandomBytes_ShouldReturnNone()
+    {
+        _service.GetContainerType(new byte[] { 1, 2, 3, 4, 5 }).Should().Be(AsicContainerType.None);
+    }
+
+    [Fact]
+    public void GetContainerType_EmptyBytes_ShouldReturnNone()
+    {
+        _service.GetContainerType(Array.Empty<byte>()).Should().Be(AsicContainerType.None);
+    }
+
+    [Fact]
+    public void GetContainerType_NullBytes_ShouldReturnNone()
+    {
+        _service.GetContainerType(null!).Should().Be(AsicContainerType.None);
+    }
+
+    [Fact]
+    public void GetContainerType_ZipWithUnknownMimetype_ShouldReturnNone()
+    {
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimeEntry = zip.CreateEntry("mimetype", CompressionLevel.NoCompression);
+            using var writer = new StreamWriter(mimeEntry.Open(), Encoding.UTF8);
+            writer.Write("application/zip");
+        }
+
+        _service.GetContainerType(ms.ToArray()).Should().Be(AsicContainerType.None);
+    }
+
+    [Fact]
+    public void GetContainerType_ZipWithManifestButNoMimetype_ShouldReturnExtended()
+    {
+        // Fallback detection: ASiCManifest.xml present without proper mimetype
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var manifestEntry = zip.CreateEntry("META-INF/ASiCManifest.xml", CompressionLevel.Optimal);
+            using var writer = new StreamWriter(manifestEntry.Open(), Encoding.UTF8);
+            writer.Write("<ASiCManifest/>");
+        }
+
+        _service.GetContainerType(ms.ToArray()).Should().Be(AsicContainerType.Extended);
+    }
+
+    #endregion
+
+    #region ValidateFileName
+
+    [Fact]
+    public async Task CreateAsync_WithMetaInfPrefixedFileName_ShouldSucceed()
+    {
+        // A file literally named "META-INFSummary.pdf" should be allowed
+        // since it doesn't contain path separators
+        var data = new byte[] { 1, 2, 3 };
+        SetupMockTsa();
+
+        var result = await _service.CreateAsync(data, "META-INFSummary.pdf");
+        result.ContainerBytes.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task CreateAsync_WithMetaInfExactName_ShouldThrow()
+    {
+        var data = new byte[] { 1, 2, 3 };
+        SetupMockTsa();
+
+        var act = () => _service.CreateAsync(data, "META-INF");
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    #endregion
+
     #region CreateExtendedFromFilesAsync + Extract on ASiC-E
 
     [Fact]
