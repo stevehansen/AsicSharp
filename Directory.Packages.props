@@ -12,7 +12,7 @@
     <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.3" />
     <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.3" />
     <!-- netstandard2.0 polyfills -->
-    <PackageVersion Include="PolySharp" Version="1.15.0" />
+    <PackageVersion Include="PolySharp" Version="1.16.0" />
     <!-- Build/versioning -->
     <PackageVersion Include="MinVer" Version="7.0.0" />
     <PackageVersion Include="ThisAssembly.AssemblyInfo" Version="2.1.2" />
