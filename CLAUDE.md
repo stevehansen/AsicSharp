@@ -85,6 +85,9 @@ This repository includes a STRIDE threat model (`STRIDE.md`) for security analys
 - Modifying trust boundaries (new external connections, database access)
 - After security incidents or penetration test findings
 - When addressing security recommendations from the document
+- **When a change mitigates or resolves an existing finding** — move it to Mitigated/Resolved (update the mitigation text, score/status, and risk-summary row)
+
+**Updates are bidirectional and ride in the same PR.** Whether a change *introduces/surfaces* a threat or *mitigates/resolves* one, the matching `STRIDE.md` edit ships in the **same PR** as the code/config change — never as a follow-up. A fix that closes a tracked finding is not done until `STRIDE.md` (and the linked issue's status) reflects it. Treat a security-relevant diff with no STRIDE.md change as incomplete.
 
 **How to update:**
 1. Add new threats to the relevant STRIDE category (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege)

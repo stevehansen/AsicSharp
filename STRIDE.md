@@ -1,6 +1,6 @@
 # AsicSharp - STRIDE Threat Model
 
-**Version:** 1.3
+**Version:** 1.4
 **Created:** 2026-02-28
 **Next Review:** 2029-02-28
 
@@ -17,7 +17,7 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Simp
 | **AsicSharp** (library) | Core library for ASiC-S/ASiC-E creation/verification | .NET (netstandard2.1, net8.0, net10.0) |
 | **AsicSharp.Cli** (`asicts`) | CLI tool wrapping the library | .NET 8.0, System.CommandLine |
 | **TsaClient** | HTTP client for RFC 3161 timestamp requests | HttpClient, System.Security.Cryptography.Pkcs |
-| **AsicService** | Orchestrator for container creation/verification | ZipArchive, XDocument (ASiCManifest), CMS/CAdES signatures |
+| **AsicService** | Orchestrator for container creation/verification/renewal; container type detection (`GetContainerType`) | ZipArchive, XDocument (ASiCManifest), CMS/CAdES signatures |
 
 ### Users / Actors
 
@@ -89,13 +89,15 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Simp
 
 ## STRIDE Analysis
 
+> **Control citations:** Each threat cites the [OWASP ASVS 5.0](https://owasp.org/www-project-application-security-verification-standard/) chapter that addresses it. As a library embedded in caller applications, the baseline is **ASVS Level 1**. Threats outside application-code scope (TSA operations, caller-managed keys) cite the responsible party or infrastructure instead.
+
 ### S — Spoofing
 
-| ID | Threat | Attack Path | Likelihood | Impact | Score | Mitigation |
-|----|--------|-------------|------------|--------|-------|------------|
-| S-1 | Rogue TSA server | Attacker configures a malicious TSA URL to issue fake timestamps | 1 (Very Low) | 3 (High) | 3 | TSA URL is caller-configured, not user-input. Library validates the cryptographic signature on TSA responses. Forged tokens fail verification. |
-| S-2 | TSA certificate compromise | A TSA's signing key is compromised, allowing forged timestamps | 1 (Very Low) | 4 (Critical) | 4 | Relies on TSA operational security and CA revocation. Outside library scope. |
-| S-3 | Revoked signing certificate accepted | CMS signature verification does not enforce revocation checking | 2 (Low) | 2 (Medium) | 4 | .NET's `SignedCms.CheckSignature(false)` performs chain validation. Revocation checking depends on platform configuration. CMS signing is optional. |
+| ID | Threat | Attack Path | Likelihood | Impact | Score | Control | Mitigation |
+|----|--------|-------------|------------|--------|-------|---------|------------|
+| S-1 | Rogue TSA server | Attacker configures a malicious TSA URL to issue fake timestamps | 1 (Very Low) | 3 (High) | 3 | V11 Cryptography | TSA URL is caller-configured, not user-input. Library validates the cryptographic signature on TSA responses. Forged tokens fail verification. |
+| S-2 | TSA certificate compromise | A TSA's signing key is compromised, allowing forged timestamps | 1 (Very Low) | 4 (Critical) | 4 | Infra — TSA/CA operational security | Relies on TSA operational security and CA revocation. Outside library scope. |
+| S-3 | Revoked signing certificate accepted | CMS signature verification does not enforce revocation checking | 2 (Low) | 2 (Medium) | 4 | V11 Cryptography | .NET's `SignedCms.CheckSignature(false)` performs chain validation. Revocation checking depends on platform configuration. CMS signing is optional. |
 
 **Countermeasures in place:**
 - TSA responses are cryptographically validated using `Rfc3161TimestampToken.VerifySignatureForHash`
@@ -104,15 +106,16 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Simp
 
 ### T — Tampering
 
-| ID | Threat | Attack Path | Likelihood | Impact | Score | Mitigation |
-|----|--------|-------------|------------|--------|-------|------------|
-| T-1 | ZIP path traversal on extract | Malicious ASiC-S container contains ZIP entry with `../` in filename; CLI `extract` writes to arbitrary path | 1 (Very Low) | 4 (Critical) | 4 | **Mitigated.** `Extract()` and `Verify()` apply `Path.GetFileName()` to strip directory components from ZIP entry names. Fixed in [#1](https://github.com/stevehansen/AsicSharp/issues/1). |
-| T-2 | Data tampering in container | Attacker modifies data inside an ASiC-S container | 2 (Low) | 3 (High) | 6 | Verification detects hash mismatch. Timestamp token binds to original data hash. |
-| T-3 | Timestamp replay | Attacker replays a previously captured timestamp token | 1 (Very Low) | 2 (Medium) | 2 | **Mitigated.** `TsaClient` generates a random 8-byte nonce when `UseNonce` is true (default). `ProcessResponse` validates the nonce in the TSA response. Tokens are also bound to a specific data hash. |
-| T-4 | TSA response interception (HTTP) | TSA URLs use HTTP; MITM could intercept and modify responses | 1 (Very Low) | 3 (High) | 3 | RFC 3161 TSA responses are cryptographically signed — a modified response fails `ProcessResponse` validation regardless of transport. HTTP is standard for TSAs (security is in the signature, not the transport). |
-| T-5 | XXE/XML bomb in ASiCManifest | Malicious ASiC-E container contains crafted ASiCManifest.xml with external entity references or recursive expansion | 1 (Very Low) | 3 (High) | 3 | **Mitigated.** `XDocument.Parse()` in .NET does not process DTDs or resolve external entities by default. XML bomb expansion is bounded by .NET's default XML reader limits. |
-| T-6 | ASiCManifest digest mismatch | Attacker modifies a data file in an ASiC-E container without updating the manifest | 2 (Low) | 3 (High) | 6 | **Mitigated.** Verification recomputes each file's digest and compares against the manifest. The timestamp binds to the manifest bytes, so manifest changes are also detected. |
-| T-7 | Archive timestamp chain tampering | Attacker modifies or replaces an intermediate archive timestamp token in a renewal chain | 1 (Very Low) | 3 (High) | 3 | **Mitigated.** Each archive timestamp covers the previous token's raw bytes. Chain verification walks all tokens in order and verifies each hash link. Any modification breaks the chain. |
+| ID | Threat | Attack Path | Likelihood | Impact | Score | Control | Mitigation |
+|----|--------|-------------|------------|--------|-------|---------|------------|
+| T-1 | ZIP path traversal on extract | Malicious ASiC-S container contains ZIP entry with `../` in filename; CLI `extract` writes to arbitrary path | 1 (Very Low) | 4 (Critical) | 4 | V5 File Handling | **Mitigated.** `Extract()` and `Verify()` apply `Path.GetFileName()` to strip directory components from ZIP entry names. Fixed in [#1](https://github.com/stevehansen/AsicSharp/issues/1). |
+| T-2 | Data tampering in container | Attacker modifies data inside an ASiC-S container | 2 (Low) | 3 (High) | 6 | V11 Cryptography | Verification detects hash mismatch. Timestamp token binds to original data hash. |
+| T-3 | Timestamp replay | Attacker replays a previously captured timestamp token | 1 (Very Low) | 2 (Medium) | 2 | V11 Cryptography | **Mitigated.** `TsaClient` generates a random 8-byte nonce when `UseNonce` is true (default). `ProcessResponse` validates the nonce in the TSA response. Tokens are also bound to a specific data hash. |
+| T-4 | TSA response interception (HTTP) | TSA URLs use HTTP; MITM could intercept and modify responses | 1 (Very Low) | 3 (High) | 3 | V12 Secure Communication / V11 Cryptography | RFC 3161 TSA responses are cryptographically signed — a modified response fails `ProcessResponse` validation regardless of transport. HTTP is standard for TSAs (security is in the signature, not the transport). |
+| T-5 | XXE/XML bomb in ASiCManifest | Malicious ASiC-E container contains crafted ASiCManifest.xml with external entity references or recursive expansion | 1 (Very Low) | 3 (High) | 3 | V1 Encoding & Sanitization | **Mitigated.** `XDocument.Parse()` in .NET does not process DTDs or resolve external entities by default. XML bomb expansion is bounded by .NET's default XML reader limits. |
+| T-6 | ASiCManifest digest mismatch | Attacker modifies a data file in an ASiC-E container without updating the manifest | 2 (Low) | 3 (High) | 6 | V11 Cryptography | **Mitigated.** Verification recomputes each file's digest and compares against the manifest. The timestamp binds to the manifest bytes, so manifest changes are also detected. |
+| T-7 | Archive timestamp chain tampering | Attacker modifies or replaces an intermediate archive timestamp token in a renewal chain | 1 (Very Low) | 3 (High) | 3 | V11 Cryptography | **Mitigated.** Each archive timestamp covers the previous token's raw bytes. Chain verification walks all tokens in order and verifies each hash link. Any modification breaks the chain. |
+| T-8 | Hash algorithm confusion via silent fallback | Crafted manifest or token declares an unrecognized digest algorithm OID/URI; library previously fell back silently to SHA-256, producing misleading verification results | 1 (Very Low) | 3 (High) | 3 | V11 Cryptography | **Mitigated.** Unrecognized hash algorithm OIDs and XML digest URIs now throw `ArgumentException` instead of silently defaulting to SHA-256. Fixed in [#7](https://github.com/stevehansen/AsicSharp/issues/7) / [#8](https://github.com/stevehansen/AsicSharp/issues/8). |
 
 **Countermeasures in place:**
 - SHA-256 hash binding between data and timestamp token
@@ -124,13 +127,14 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Simp
 - ASiC-E digest verification: each file's hash verified against ASiCManifest, manifest hash verified against timestamp
 - Archive timestamp chain verification: each renewal token's hash verified against the previous token's bytes
 - `XDocument.Parse()` used for manifest parsing (safe XML defaults, no DTD processing)
+- Strict digest algorithm identifier mapping — unrecognized OIDs/URIs are rejected, never silently downgraded
 
 ### R — Repudiation
 
-| ID | Threat | Attack Path | Likelihood | Impact | Score | Mitigation |
-|----|--------|-------------|------------|--------|-------|------------|
-| R-1 | No audit trail for operations | Library does not log who created/verified containers or maintain an audit trail | 2 (Low) | 2 (Medium) | 4 | Structured logging via `ILogger` at Debug/Information levels. Calling application can capture and persist logs. |
-| R-2 | Timestamp authority denial | TSA denies issuing a timestamp | 1 (Very Low) | 2 (Medium) | 2 | RFC 3161 tokens contain the TSA's cryptographic signature, providing non-repudiation. Multiple well-known TSAs available. |
+| ID | Threat | Attack Path | Likelihood | Impact | Score | Control | Mitigation |
+|----|--------|-------------|------------|--------|-------|---------|------------|
+| R-1 | No audit trail for operations | Library does not log who created/verified containers or maintain an audit trail | 2 (Low) | 2 (Medium) | 4 | V16 Security Logging & Error Handling | Structured logging via `ILogger` at Debug/Information levels. Calling application can capture and persist logs. |
+| R-2 | Timestamp authority denial | TSA denies issuing a timestamp | 1 (Very Low) | 2 (Medium) | 2 | V11 Cryptography | RFC 3161 tokens contain the TSA's cryptographic signature, providing non-repudiation. Multiple well-known TSAs available. |
 
 **Countermeasures in place:**
 - RFC 3161 timestamps provide cryptographic non-repudiation of time
@@ -139,12 +143,12 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Simp
 
 ### I — Information Disclosure
 
-| ID | Threat | Attack Path | Likelihood | Impact | Score | Mitigation |
-|----|--------|-------------|------------|--------|-------|------------|
-| I-1 | Data hash in logs | SHA-256 hash of timestamped data is logged at Information level and returned in results | 2 (Low) | 1 (Low) | 2 | Hash is a one-way function — it does not reveal original data content. Standard practice for timestamping workflows. |
-| I-2 | File paths in CLI output | Full file system paths are printed to console | 2 (Low) | 1 (Low) | 2 | CLI output is local to the user's terminal. Expected behavior for a CLI tool. |
-| I-3 | Exception messages expose internals | `TimestampAuthorityException` includes HTTP status codes; `CryptographicException` messages forwarded to callers | 2 (Low) | 1 (Low) | 2 | Exception details help developers diagnose issues. Library consumers control whether exceptions reach end users. |
-| I-4 | Signing certificate in memory | `X509Certificate2` with private key held in memory (unprotected) | 1 (Very Low) | 3 (High) | 3 | Standard .NET pattern. Callers should use secure certificate storage (Key Vault, DPAPI, etc.). Private key lifetime is caller's responsibility. |
+| ID | Threat | Attack Path | Likelihood | Impact | Score | Control | Mitigation |
+|----|--------|-------------|------------|--------|-------|---------|------------|
+| I-1 | Data hash in logs | SHA-256 hash of timestamped data is logged at Information level and returned in results | 2 (Low) | 1 (Low) | 2 | V14 Data Protection | Hash is a one-way function — it does not reveal original data content. Standard practice for timestamping workflows. |
+| I-2 | File paths in CLI output | Full file system paths are printed to console | 2 (Low) | 1 (Low) | 2 | V14 Data Protection | CLI output is local to the user's terminal. Expected behavior for a CLI tool. |
+| I-3 | Exception messages expose internals | `TimestampAuthorityException` includes HTTP status codes; `CryptographicException` messages forwarded to callers | 2 (Low) | 1 (Low) | 2 | V16 Security Logging & Error Handling | Exception details help developers diagnose issues. Library consumers control whether exceptions reach end users. |
+| I-4 | Signing certificate in memory | `X509Certificate2` with private key held in memory (unprotected) | 1 (Very Low) | 3 (High) | 3 | V11 Cryptography (key management — caller) | Standard .NET pattern. Callers should use secure certificate storage (Key Vault, DPAPI, etc.). Private key lifetime is caller's responsibility. |
 
 **Countermeasures in place:**
 - Only data hash (not raw data) is logged or sent to TSA
@@ -153,26 +157,27 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Simp
 
 ### D — Denial of Service
 
-| ID | Threat | Attack Path | Likelihood | Impact | Score | Mitigation |
-|----|--------|-------------|------------|--------|-------|------------|
-| D-1 | TSA unavailability | TSA server is down or rate-limits requests | 2 (Low) | 2 (Medium) | 4 | Configurable timeout (default 30s). `HttpRequestException` thrown on failure. Caller can retry or use alternate TSA. |
-| D-2 | ZIP bomb in container | Malicious ASiC-S with highly compressed entry causes memory exhaustion during verification | 1 (Very Low) | 3 (High) | 3 | Container bytes are fully loaded into memory via `byte[]` API. .NET `ZipArchive` provides basic protection against unbounded expansion. |
-| D-3 | Large file processing | Very large input file(s) cause memory pressure (all data loaded via `ReadAllBytes`). ASiC-E amplifies this with multiple files. | 2 (Low) | 2 (Medium) | 4 | **Mitigated.** Configurable `MaxFileSize` option (default 10 MB) rejects oversized files before processing. Set to `null` to disable. Stream-based `CreateAsync(Stream, ...)` overload also available for ASiC-S. |
-| D-4 | Unbounded timestamp chain growth | Repeated `RenewAsync` calls grow the container by one .tst entry each time | 1 (Very Low) | 1 (Low) | 1 | Each archive timestamp is small (~2-4 KB). Renewal is an explicit caller action, not automatic. Container size growth is negligible over typical renewal cycles (years). |
+| ID | Threat | Attack Path | Likelihood | Impact | Score | Control | Mitigation |
+|----|--------|-------------|------------|--------|-------|---------|------------|
+| D-1 | TSA unavailability | TSA server is down or rate-limits requests | 2 (Low) | 2 (Medium) | 4 | V13 Configuration / caller infra (retry, failover) | Configurable timeout (default 30s). `HttpRequestException` thrown on failure. Caller can retry or use alternate TSA. |
+| D-2 | ZIP bomb in container | Malicious ASiC container with highly compressed entries causes memory exhaustion during verification or `GetContainerType` | 1 (Very Low) | 3 (High) | 3 | V5 File Handling | Data entries are size-validated (`ValidateEntrySize` against `MaxFileSize`, default 10 MB) before reading during verify/extract. **Residual:** metadata entries (mimetype, ASiCManifest, `.tst`, `.p7s`) are read without a size cap — expansion is bounded only by the deflate ratio (~1032:1). `GetContainerType` wraps parsing in a catch-all and returns `None` on malformed input. |
+| D-3 | Large file processing | Very large input file(s) cause memory pressure (all data loaded via `ReadAllBytes`). ASiC-E amplifies this with multiple files. | 2 (Low) | 2 (Medium) | 4 | V5 File Handling | **Mitigated.** Configurable `MaxFileSize` option (default 10 MB) rejects oversized files before processing. Set to `null` to disable. Stream-based `CreateAsync(Stream, ...)` overload also available for ASiC-S. |
+| D-4 | Unbounded timestamp chain growth | Repeated `RenewAsync` calls grow the container by one .tst entry each time | 1 (Very Low) | 1 (Low) | 1 | V5 File Handling | Each archive timestamp is small (~2-4 KB). Renewal is an explicit caller action, not automatic. Container size growth is negligible over typical renewal cycles (years). |
 
 **Countermeasures in place:**
 - Configurable HTTP timeout (default 30 seconds)
-- Configurable per-file size limit (`MaxFileSize`, default 10 MB)
+- Configurable per-file size limit (`MaxFileSize`, default 10 MB) enforced on creation and on data entries during verify/extract (`ValidateEntrySize`)
 - Stream overload for memory-efficient creation
 - Multiple well-known TSA URLs available as fallbacks
 - `CancellationToken` support on async operations
+- `GetContainerType` fails closed (`None`) on malformed containers
 
 ### E — Elevation of Privilege
 
-| ID | Threat | Attack Path | Likelihood | Impact | Score | Mitigation |
-|----|--------|-------------|------------|--------|-------|------------|
-| E-1 | Arbitrary file write via extract | Malicious ZIP entry name with path traversal sequences causes file overwrite outside output directory | 1 (Very Low) | 4 (Critical) | 4 | **Mitigated.** Same fix as T-1 — `Extract()` and `Verify()` sanitize entry names via `Path.GetFileName()`. Fixed in [#1](https://github.com/stevehansen/AsicSharp/issues/1). |
-| E-2 | Signing certificate misuse | Compromised signing certificate used to create fraudulent signed containers | 1 (Very Low) | 3 (High) | 3 | Certificate management is the caller's responsibility. Library does not store or manage certificates. |
+| ID | Threat | Attack Path | Likelihood | Impact | Score | Control | Mitigation |
+|----|--------|-------------|------------|--------|-------|---------|------------|
+| E-1 | Arbitrary file write via extract | Malicious ZIP entry name with path traversal sequences causes file overwrite outside output directory | 1 (Very Low) | 4 (Critical) | 4 | V5 File Handling | **Mitigated.** Same fix as T-1 — `Extract()` and `Verify()` sanitize entry names via `Path.GetFileName()`. Fixed in [#1](https://github.com/stevehansen/AsicSharp/issues/1). |
+| E-2 | Signing certificate misuse | Compromised signing certificate used to create fraudulent signed containers | 1 (Very Low) | 3 (High) | 3 | V11 Cryptography (key management — caller) | Certificate management is the caller's responsibility. Library does not store or manage certificates. |
 
 **Countermeasures in place:**
 - Library runs with caller's privileges (no elevation)
@@ -200,6 +205,7 @@ None — all previously high-priority threats have been mitigated.
 | TSA operational security | Medium | Library trusts TSA certificate chain; TSA compromise is outside scope |
 | SHA-1 backward compatibility | Low | Supported for legacy TSA tokens; SHA-256 is the default and recommended |
 | HTTP transport for TSA | Low | Standard practice — RFC 3161 security relies on cryptographic signatures, not transport |
+| Metadata ZIP entries not size-capped | Low | `MaxFileSize` guards data entries only; mimetype/manifest/timestamp/signature entries are read unbounded (deflate expansion ≤ ~1032:1 of container size). Relevant only when verifying untrusted containers in a memory-constrained service. |
 
 ---
 
@@ -207,11 +213,11 @@ None — all previously high-priority threats have been mitigated.
 
 | Category | Implementation |
 |----------|---------------|
-| **Cryptography** | SHA-256/384/512 via .NET APIs; RFC 3161 timestamp tokens with nonce replay protection; CMS/CAdES detached signatures; archive timestamp chain verification for renewal |
-| **Input Validation** | `ValidateFileName()` on creation (rejects duplicates for ASiC-E); `Path.GetFileName()` on extraction; null/empty checks on all public APIs; file existence checks |
+| **Cryptography** | SHA-256/384/512 via .NET APIs; RFC 3161 timestamp tokens with nonce replay protection; CMS/CAdES detached signatures; archive timestamp chain verification for renewal; strict digest algorithm identifier mapping (unrecognized OIDs/URIs rejected) |
+| **Input Validation** | `ValidateFileName()` on creation (rejects path separators, `mimetype`, exact `META-INF`); `ValidateEntrySize()` on data entries during verify/extract; `Path.GetFileName()` on extraction; null/empty checks on all public APIs; file existence checks |
 | **XML Processing** | `XDocument.Parse()` for ASiCManifest (safe defaults: no DTD, no external entities); digest verification per `DataObjectReference` |
 | **Certificate Validation** | `Rfc3161TimestampToken.VerifySignatureForHash`; `SignedCms.CheckSignature` with chain validation |
-| **Error Handling** | Custom exception hierarchy (`AsicTimestampException` → specific subtypes); structured logging |
+| **Error Handling** | Custom exception hierarchy (`AsicTimestampException` → specific subtypes); structured logging; `GetContainerType` fails closed on malformed input |
 | **Transport** | HttpClient with configurable timeout; TSA response validation independent of transport |
 | **Build Security** | `TreatWarningsAsErrors`; `AnalysisLevel latest-recommended`; nullable enabled |
 | **CI/CD** | Automated unit + integration tests; OIDC trusted publishing to NuGet (no API key secrets) |
@@ -226,6 +232,7 @@ None — all previously high-priority threats have been mitigated.
 | 1.1 | 2026-02-28 | Post-fix update | T-1/E-1 mitigated (path traversal fix); T-3 mitigated (nonce support implemented) |
 | 1.2 | 2026-02-28 | ASiC-E support | Added T-5 (XXE/XML bomb), T-6 (manifest digest mismatch), updated D-3 for multi-file; added XML processing controls |
 | 1.3 | 2026-02-28 | Timestamp renewal | Added T-7 (archive timestamp chain tampering), D-4 (unbounded chain growth); updated cryptography controls for chain verification |
+| 1.4 | 2026-07-09 | GetContainerType / code quality review | Added T-8 (hash algorithm confusion — mitigated via [#7](https://github.com/stevehansen/AsicSharp/issues/7)/[#8](https://github.com/stevehansen/AsicSharp/issues/8)); updated D-2 for `ValidateEntrySize` and `GetContainerType`, noted metadata entry size-cap residual; backfilled ASVS 5.0 control column for all threats |
 
 ---
 
@@ -237,4 +244,5 @@ None — all previously high-priority threats have been mitigated.
 - [RFC 3161](https://datatracker.ietf.org/doc/html/rfc3161) — Internet X.509 PKI Time-Stamp Protocol
 - [RFC 5652](https://datatracker.ietf.org/doc/html/rfc5652) — Cryptographic Message Syntax (CMS)
 - [OWASP STRIDE](https://owasp.org/www-community/Threat_Modeling_Process) — Threat Modeling Methodology
+- [OWASP ASVS 5.0](https://owasp.org/www-project-application-security-verification-standard/) — Application Security Verification Standard (control citations)
 - [EU eIDAS Regulation](https://digital-strategy.ec.europa.eu/en/policies/eidas-regulation) — Electronic Identification and Trust Services
