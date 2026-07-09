@@ -25,7 +25,7 @@ Three projects in `AsicSharp.sln`:
 
 - **`src/AsicSharp`** — Core library (multi-target: `netstandard2.1`, `net8.0`, `net10.0`). Published as NuGet package. Uses PolySharp for netstandard2.1 polyfills.
 - **`src/AsicSharp.Cli`** — CLI tool (`net8.0`). Packaged as a dotnet global tool (`asicts`). Uses `System.CommandLine` for arg parsing.
-- **`tests/AsicSharp.Tests`** — xUnit tests (`net8.0`) with NSubstitute for mocking and FluentAssertions. Integration tests (trait `Category=Integration`) hit real TSA servers and need network access.
+- **`tests/AsicSharp.Tests`** — xUnit tests (`net8.0`) with NSubstitute for mocking and AwesomeAssertions (the free Apache-2.0 fork of FluentAssertions; v8+ of FluentAssertions is commercially licensed). Integration tests (trait `Category=Integration`) hit real TSA servers and need network access.
 
 ## Architecture
 

@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.Pkcs;
 using AsicSharp.Configuration;
 using AsicSharp.Services;
-using FluentAssertions;
+using AwesomeAssertions;
 using Xunit;
 
 namespace AsicSharp.Tests;

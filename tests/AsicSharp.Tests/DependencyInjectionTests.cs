@@ -1,7 +1,7 @@
 using AsicSharp.Configuration;
 using AsicSharp.Extensions;
 using AsicSharp.Services;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;

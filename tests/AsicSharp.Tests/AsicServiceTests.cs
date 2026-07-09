@@ -6,7 +6,7 @@ using AsicSharp;
 using AsicSharp.Configuration;
 using AsicSharp.Models;
 using AsicSharp.Services;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.Options;
 using NSubstitute;
 using Xunit;
@@ -69,7 +69,7 @@ public class AsicServiceTests
         // Assert — should be a valid ZIP
         using var zip = new ZipArchive(new MemoryStream(result.ContainerBytes), ZipArchiveMode.Read);
 
-        zip.Entries.Should().HaveCountGreaterOrEqualTo(4); // mimetype, data, timestamp, README.txt
+        zip.Entries.Should().HaveCountGreaterThanOrEqualTo(4); // mimetype, data, timestamp, README.txt
 
         // mimetype must be first
         zip.Entries[0].FullName.Should().Be("mimetype");

@@ -4,7 +4,7 @@ using System.Text;
 using AsicSharp.Configuration;
 using AsicSharp.Models;
 using AsicSharp.Services;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.Options;
 using Xunit;
 
