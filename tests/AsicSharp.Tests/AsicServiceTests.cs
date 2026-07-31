@@ -336,6 +336,19 @@ public class AsicServiceTests
 
     #region Timestamp Renewal Tests
 
+    private static readonly string[] ChainAfterOneRenewal =
+    [
+        "META-INF/timestamp.tst",
+        "META-INF/timestamp-002.tst"
+    ];
+
+    private static readonly string[] ChainAfterTwoRenewals =
+    [
+        "META-INF/timestamp.tst",
+        "META-INF/timestamp-002.tst",
+        "META-INF/timestamp-003.tst"
+    ];
+
     [Fact]
     public async Task RenewAsync_ShouldAddArchiveTimestampToContainer()
     {
@@ -467,6 +480,72 @@ public class AsicServiceTests
 
         // Assert — no chain for single-timestamp containers
         result.TimestampChain.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Verify_RenewedContainer_ChainShouldStartWithTheOriginalTimestamp()
+    {
+        // Chain order must not come from the entry name: '-' (0x2D) sorts before '.' (0x2E),
+        // so a lexicographic sort puts timestamp-002.tst ahead of the original timestamp.tst.
+        var data = Encoding.UTF8.GetBytes("Chain ordering");
+        SetupMockTsa();
+        var createResult = await _service.CreateAsync(data, "test.txt");
+        var renew1 = await _service.RenewAsync(createResult.ContainerBytes);
+        var renew2 = await _service.RenewAsync(renew1.ContainerBytes);
+
+        // Act
+        var verifyResult = _service.Verify(renew2.ContainerBytes);
+
+        // Assert
+        verifyResult.TimestampChain.Should().NotBeNull();
+        verifyResult.TimestampChain!.Select(e => e.EntryName).Should().Equal(ChainAfterTwoRenewals);
+    }
+
+    [Fact]
+    public async Task Verify_RenewedAsicEContainer_ChainShouldStartWithTheOriginalTimestamp()
+    {
+        // Same ordering rule on the ASiC-E path, which walks the chain in its own copy of the loop.
+        var files = new List<(string FileName, byte[] Data)>
+        {
+            ("file1.txt", Encoding.UTF8.GetBytes("Extended content"))
+        };
+        SetupMockTsa();
+        var createResult = await _service.CreateExtendedAsync(files);
+        var renewResult = await _service.RenewAsync(createResult.ContainerBytes);
+
+        // Act
+        var verifyResult = _service.Verify(renewResult.ContainerBytes);
+
+        // Assert
+        verifyResult.TimestampChain.Should().NotBeNull();
+        verifyResult.TimestampChain!.Select(e => e.EntryName).Should().Equal(ChainAfterOneRenewal);
+    }
+
+    [Fact]
+    public async Task RenewAsync_SecondRenewal_ShouldCoverTheNewestToken()
+    {
+        // Arrange — a distinguishable token per TSA call, so the hash identifies what was covered
+        var originalToken = Encoding.UTF8.GetBytes("TOKEN_ORIGINAL");
+        var firstArchiveToken = Encoding.UTF8.GetBytes("TOKEN_ARCHIVE_002");
+        var secondArchiveToken = Encoding.UTF8.GetBytes("TOKEN_ARCHIVE_003");
+
+        _mockTsa.RequestTimestampAsync(
+            Arg.Any<byte[]>(),
+            Arg.Any<HashAlgorithmName>(),
+            Arg.Any<CancellationToken>())
+            .Returns(
+                new TimestampResult { TokenBytes = originalToken, Timestamp = DateTimeOffset.UtcNow },
+                new TimestampResult { TokenBytes = firstArchiveToken, Timestamp = DateTimeOffset.UtcNow },
+                new TimestampResult { TokenBytes = secondArchiveToken, Timestamp = DateTimeOffset.UtcNow });
+
+        var createResult = await _service.CreateAsync(Encoding.UTF8.GetBytes("Renewal target"), "test.txt");
+        var renew1 = await _service.RenewAsync(createResult.ContainerBytes);
+
+        // Act
+        var renew2 = await _service.RenewAsync(renew1.ContainerBytes);
+
+        // Assert — the second renewal chains onto timestamp-002.tst, not back onto the original
+        renew2.DataHash.Should().Be(AsicCrypto.ToHexString(SHA256.HashData(firstArchiveToken)));
     }
 
     #endregion

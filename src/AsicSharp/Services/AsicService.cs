@@ -284,9 +284,7 @@ public sealed class AsicService : IAsicService
             });
 
             // Step 4: Find and verify timestamp(s) — supports renewal chains
-            var allTsEntries = GetTimestampEntries(zip)
-                .OrderBy(e => e.FullName, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            var allTsEntries = GetTimestampEntriesInChainOrder(zip);
 
             DateTimeOffset? timestamp = null;
             X509Certificate2? tsaCert = null;
@@ -580,13 +578,11 @@ public sealed class AsicService : IAsicService
 
         using (var zip = OpenZip(containerBytes))
         {
-            tsEntries = GetTimestampEntries(zip);
+            tsEntries = GetTimestampEntriesInChainOrder(zip);
             if (tsEntries.Count == 0)
                 throw new InvalidAsicContainerException("No timestamp token found in container — cannot renew.");
 
-            // Sort by name (lexicographic gives correct chain order)
-            tsEntries = tsEntries.OrderBy(e => e.FullName, StringComparer.OrdinalIgnoreCase).ToList();
-
+            // The archive timestamp must cover the newest token — the last link in the chain.
             var latestEntry = tsEntries[^1];
             latestEntryName = latestEntry.FullName;
             latestTokenBytes = ReadEntryBytes(latestEntry);
@@ -1055,9 +1051,7 @@ public sealed class AsicService : IAsicService
         }
 
         // Step 5: Verify timestamp(s) cover the manifest — supports renewal chains
-        var allTsEntries = GetTimestampEntries(zip)
-            .OrderBy(e => e.FullName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var allTsEntries = GetTimestampEntriesInChainOrder(zip);
 
         DateTimeOffset? timestamp = null;
         X509Certificate2? tsaCert = null;
@@ -1336,33 +1330,67 @@ public sealed class AsicService : IAsicService
     }
 
     /// <summary>
+    /// Timestamp entries in renewal-chain order: the original timestamp first, then each archive
+    /// timestamp by ascending sequence number.
+    /// </summary>
+    /// <remarks>
+    /// Ordering by entry name would invert the chain — '-' (0x2D) sorts before '.' (0x2E), so
+    /// "timestamp-002.tst" would precede "timestamp.tst". Entries carrying no recognizable
+    /// sequence number sort last, by name, keeping the order total and deterministic.
+    /// </remarks>
+    private static List<ZipArchiveEntry> GetTimestampEntriesInChainOrder(ZipArchive zip)
+    {
+        return GetTimestampEntries(zip)
+            .OrderBy(e => GetTimestampSequence(e.FullName) ?? int.MaxValue)
+            .ThenBy(e => e.FullName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static readonly string OriginalTimestampName =
+        Path.GetFileNameWithoutExtension(AsicConstants.TimestampFileName);
+
+    /// <summary>
+    /// The chain position encoded in a timestamp entry name: 1 for the original "timestamp.tst",
+    /// N for an archive "timestamp-NNN.tst". Null when the name follows neither convention.
+    /// </summary>
+    private static int? GetTimestampSequence(string entryName)
+    {
+        var fileName = Path.GetFileNameWithoutExtension(entryName);
+
+        if (string.Equals(fileName, OriginalTimestampName, StringComparison.OrdinalIgnoreCase))
+            return 1;
+
+        if (fileName.StartsWith(AsicConstants.ArchiveTimestampPrefix, StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(
+                fileName.AsSpan(AsicConstants.ArchiveTimestampPrefix.Length),
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var sequence) &&
+            sequence > 0)
+        {
+            return sequence;
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Determine the next archive timestamp entry name based on existing entries.
     /// timestamp.tst → timestamp-002.tst → timestamp-003.tst → ...
     /// </summary>
     private static string GetNextTimestampEntryName(List<ZipArchiveEntry> tsEntries)
     {
-        if (tsEntries.Count == 1 &&
-            string.Equals(tsEntries[0].FullName, AsicConstants.TimestampEntryPath, StringComparison.OrdinalIgnoreCase))
-        {
-            // First renewal: timestamp.tst → timestamp-002.tst
-            return AsicConstants.MetaInfDir + "/" + AsicConstants.ArchiveTimestampPrefix + "002" + AsicConstants.TimestampExtension;
-        }
+        var highest = tsEntries
+            .Select(e => GetTimestampSequence(e.FullName))
+            .Where(sequence => sequence.HasValue)
+            .Select(sequence => sequence!.Value)
+            .DefaultIfEmpty(1)
+            .Max();
 
-        // Find the highest number in existing entries
-        int maxNumber = 1;
-        foreach (var entry in tsEntries)
-        {
-            var fileName = Path.GetFileNameWithoutExtension(entry.FullName);
-            if (fileName.StartsWith(AsicConstants.ArchiveTimestampPrefix, StringComparison.OrdinalIgnoreCase))
-            {
-                var numberPart = fileName.Substring(AsicConstants.ArchiveTimestampPrefix.Length);
-                if (int.TryParse(numberPart, out var number) && number > maxNumber)
-                    maxNumber = number;
-            }
-        }
-
-        var nextNumber = maxNumber + 1;
-        return AsicConstants.MetaInfDir + "/" + AsicConstants.ArchiveTimestampPrefix + nextNumber.ToString("D3", System.Globalization.CultureInfo.InvariantCulture) + AsicConstants.TimestampExtension;
+        return AsicConstants.MetaInfDir + "/"
+            + AsicConstants.ArchiveTimestampPrefix
+            + (highest + 1).ToString("D3", System.Globalization.CultureInfo.InvariantCulture)
+            + AsicConstants.TimestampExtension;
     }
 
     /// <summary>

@@ -1,6 +1,6 @@
 # AsicSharp - STRIDE Threat Model
 
-**Version:** 1.4
+**Version:** 1.5
 **Created:** 2026-02-28
 **Next Review:** 2029-02-28
 
@@ -114,8 +114,9 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Simp
 | T-4 | TSA response interception (HTTP) | TSA URLs use HTTP; MITM could intercept and modify responses | 1 (Very Low) | 3 (High) | 3 | V12 Secure Communication / V11 Cryptography | RFC 3161 TSA responses are cryptographically signed — a modified response fails `ProcessResponse` validation regardless of transport. HTTP is standard for TSAs (security is in the signature, not the transport). |
 | T-5 | XXE/XML bomb in ASiCManifest | Malicious ASiC-E container contains crafted ASiCManifest.xml with external entity references or recursive expansion | 1 (Very Low) | 3 (High) | 3 | V1 Encoding & Sanitization | **Mitigated.** `XDocument.Parse()` in .NET does not process DTDs or resolve external entities by default. XML bomb expansion is bounded by .NET's default XML reader limits. |
 | T-6 | ASiCManifest digest mismatch | Attacker modifies a data file in an ASiC-E container without updating the manifest | 2 (Low) | 3 (High) | 6 | V11 Cryptography | **Mitigated.** Verification recomputes each file's digest and compares against the manifest. The timestamp binds to the manifest bytes, so manifest changes are also detected. |
-| T-7 | Archive timestamp chain tampering | Attacker modifies or replaces an intermediate archive timestamp token in a renewal chain | 1 (Very Low) | 3 (High) | 3 | V11 Cryptography | **Mitigated.** Each archive timestamp covers the previous token's raw bytes. Chain verification walks all tokens in order and verifies each hash link. Any modification breaks the chain. |
+| T-7 | Archive timestamp chain tampering | Attacker modifies or replaces an intermediate archive timestamp token in a renewal chain | 1 (Very Low) | 3 (High) | 3 | V11 Cryptography | **Mitigated.** Each archive timestamp covers the previous token's raw bytes. Chain verification walks all tokens in chain order and verifies each hash link. Any modification breaks the chain. Chain order is derived from the parsed timestamp sequence number, not from the entry name — a name-based sort inverts the chain (`-` 0x2D sorts before `.` 0x2E), which until 2026-07-31 made every renewed container fail verification and caused repeat renewals to fork off the original token instead of chaining. Pinned by three unit facts plus `AsicService_RenewTwice_ChainShouldVerifyAndKeepTheOriginalInstant`. |
 | T-8 | Hash algorithm confusion via silent fallback | Crafted manifest or token declares an unrecognized digest algorithm OID/URI; library previously fell back silently to SHA-256, producing misleading verification results | 1 (Very Low) | 3 (High) | 3 | V11 Cryptography | **Mitigated.** Unrecognized hash algorithm OIDs and XML digest URIs now throw `ArgumentException` instead of silently defaulting to SHA-256. Fixed in [#7](https://github.com/stevehansen/AsicSharp/issues/7) / [#8](https://github.com/stevehansen/AsicSharp/issues/8). |
+| T-9 | Unlisted data file injected into ASiC-E container | Attacker adds a data file to an ASiC-E container without referencing it in the ASiCManifest. `VerifyExtended` iterates only the manifest's `DataObjectReference` elements, so the file is neither hashed nor reported and the container still verifies as valid. `ExtractAll` walks ZIP entries rather than the manifest, so a verify-then-extract-all consumer surfaces bytes the proof of existence never covered. | 2 (Low) | 3 (High) | 6 | V11 Cryptography | **Open.** No completeness check exists: nothing compares the set of ZIP data entries against the set of manifest references. Adding a verification step is a behavior change — `IsValid` is the conjunction of all steps, so containers that verify today would become invalid. Tracked in [#25](https://github.com/stevehansen/AsicSharp/issues/25); documented in `docs/verification.md` and `docs/container.md`. |
 
 **Countermeasures in place:**
 - SHA-256 hash binding between data and timestamp token
@@ -124,8 +125,8 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Simp
 - `Path.GetFileName()` sanitizes ZIP entry names during extraction and verification
 - Random nonce included in timestamp requests (replay protection)
 - `Rfc3161TimestampRequest.ProcessResponse` validates response integrity and nonce
-- ASiC-E digest verification: each file's hash verified against ASiCManifest, manifest hash verified against timestamp
-- Archive timestamp chain verification: each renewal token's hash verified against the previous token's bytes
+- ASiC-E digest verification: each *manifest-referenced* file's hash verified against ASiCManifest, manifest hash verified against timestamp (no check for ZIP entries absent from the manifest — see T-9)
+- Archive timestamp chain verification: each renewal token's hash verified against the previous token's bytes, in sequence-number order
 - `XDocument.Parse()` used for manifest parsing (safe XML defaults, no DTD processing)
 - Strict digest algorithm identifier mapping — unrecognized OIDs/URIs are rejected, never silently downgraded
 
@@ -206,6 +207,7 @@ None — all previously high-priority threats have been mitigated.
 | SHA-1 backward compatibility | Low | Supported for legacy TSA tokens; SHA-256 is the default and recommended |
 | HTTP transport for TSA | Low | Standard practice — RFC 3161 security relies on cryptographic signatures, not transport |
 | Metadata ZIP entries not size-capped | Low | `MaxFileSize` guards data entries only; mimetype/manifest/timestamp/signature entries are read unbounded (deflate expansion ≤ ~1032:1 of container size). Relevant only when verifying untrusted containers in a memory-constrained service. |
+| ASiC-E completeness not verified (T-9) | Medium | **Open, tracked in [#25](https://github.com/stevehansen/AsicSharp/issues/25).** A ZIP data entry absent from the ASiCManifest is neither verified nor reported, and `ExtractAll` still returns it. Closing it by adding a failing verification step would invalidate containers that verify today, so the fix needs a compatibility decision. |
 
 ---
 
@@ -233,6 +235,7 @@ None — all previously high-priority threats have been mitigated.
 | 1.2 | 2026-02-28 | ASiC-E support | Added T-5 (XXE/XML bomb), T-6 (manifest digest mismatch), updated D-3 for multi-file; added XML processing controls |
 | 1.3 | 2026-02-28 | Timestamp renewal | Added T-7 (archive timestamp chain tampering), D-4 (unbounded chain growth); updated cryptography controls for chain verification |
 | 1.4 | 2026-07-09 | GetContainerType / code quality review | Added T-8 (hash algorithm confusion — mitigated via [#7](https://github.com/stevehansen/AsicSharp/issues/7)/[#8](https://github.com/stevehansen/AsicSharp/issues/8)); updated D-2 for `ValidateEntrySize` and `GetContainerType`, noted metadata entry size-cap residual; backfilled ASVS 5.0 control column for all threats |
+| 1.5 | 2026-07-31 | Domain documentation pass | Corrected T-7: chain order was derived from the entry name, inverting the chain — every renewed container failed verification and repeat renewals forked off the original token; fixed and pinned by three unit facts plus a renewal integration test. Added T-9 (unlisted ASiC-E data file verifies as valid, open — [#25](https://github.com/stevehansen/AsicSharp/issues/25)) and its residual-risk row; qualified the ASiC-E digest countermeasure accordingly |
 
 ---
 

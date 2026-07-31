@@ -18,6 +18,13 @@ namespace AsicSharp.Tests;
 [Trait("Category", "Integration")]
 public class IntegrationTests : IDisposable
 {
+    private static readonly string[] ChainAfterTwoRenewals =
+    [
+        "META-INF/timestamp.tst",
+        "META-INF/timestamp-002.tst",
+        "META-INF/timestamp-003.tst"
+    ];
+
     private readonly HttpClient _httpClient;
     private readonly AsicTimestampOptions _options;
     private readonly TsaClient _tsaClient;
@@ -99,6 +106,29 @@ public class IntegrationTests : IDisposable
 
         verifyResult.IsValid.Should().BeTrue();
         verifyResult.DataBytes.Should().BeEquivalentTo(data);
+    }
+
+    [Fact]
+    public async Task AsicService_RenewTwice_ChainShouldVerifyAndKeepTheOriginalInstant()
+    {
+        // The only test that exercises real chain-link cryptography: unit tests use a non-DER
+        // placeholder token, so token decoding and hash linkage never run there.
+        var data = Encoding.UTF8.GetBytes("Long-term archival document. Created at " + DateTime.UtcNow);
+
+        var createResult = await _asicService.CreateAsync(data, "archive.txt");
+        var renew1 = await _asicService.RenewAsync(createResult.ContainerBytes);
+        var renew2 = await _asicService.RenewAsync(renew1.ContainerBytes);
+
+        var verifyResult = _asicService.Verify(renew2.ContainerBytes);
+
+        verifyResult.IsValid.Should().BeTrue(because: verifyResult.Error ?? "no error");
+        verifyResult.Timestamp.Should().Be(
+            createResult.Timestamp,
+            because: "renewal extends a proof of existence, it never moves the original instant forward");
+
+        verifyResult.TimestampChain.Should().NotBeNull();
+        verifyResult.TimestampChain!.Select(e => e.EntryName).Should().Equal(ChainAfterTwoRenewals);
+        verifyResult.TimestampChain.Should().OnlyContain(link => link.IsValid);
     }
 
     [Fact]
