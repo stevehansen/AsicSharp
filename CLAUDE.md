@@ -10,6 +10,19 @@ AsicSharp is a .NET library and CLI tool (`asicts`) for creating and verifying *
 
 `UBIQUITOUS_LANGUAGE.md` (repo root) is the canonical domain glossary — the agreed vocabulary for containers, timestamping, verification and renewal. Use these terms in code, XML doc comments, CLI output and prose; consult its "Flagged ambiguities" before naming new concepts (notably *timestamp* = instant vs. token vs. act, *entry* = ZIP entry vs. manifest reference vs. chain link, *valid* = cryptographic integrity and never a trust decision, and *signature* = the TSA's signature inside a token vs. the optional CAdES signature). Update it when introducing or renaming a domain concept.
 
+## Domain Documentation (Living Specs)
+
+Above the flat `UBIQUITOUS_LANGUAGE.md` glossary, each business domain has a **living spec** paired with a **priming skill**, indexed in [`docs/README.md`](docs/README.md):
+
+- **Living spec** `docs/<domain>.md` — deep, human-facing current-state doc: entities, invariants, key files, gotchas, and which tests are the authority for which rule.
+- **Priming skill** `.claude/skills/<domain>/SKILL.md` — thin, agent-facing; loads the essentials fast and links *down* to the spec.
+
+Start from the **domain index** in `docs/README.md` — four domains (**container**, **timestamping**, **verification**, **renewal**), the boundaries between them, and the template for adding one.
+
+**Same-PR sync rule:** any change to a domain's behavior updates its living spec **in the same PR** as the code change — never as a follow-up. If the change alters a load-bearing invariant, update the priming skill too. A domain-behavior diff with no matching spec edit is incomplete. (Same discipline as the `STRIDE.md` and `UBIQUITOUS_LANGUAGE.md` sync rules in this file.)
+
+Auditing and adding domains is handled by the user-level `domain-priming` skill.
+
 ## Build & Test Commands
 
 ```bash
@@ -36,11 +49,7 @@ Three projects in `AsicSharp.sln`:
 
 ## Architecture
 
-### Flow
-
-- **Create ASiC-S**: hash the data → `ITsaClient` → token → build ZIP (`mimetype`, data file, `META-INF/timestamp.tst`, `META-INF/README.txt`, optional `META-INF/signature.p7s`).
-- **Create ASiC-E**: build `META-INF/ASiCManifest.xml` holding each file's digest → hash *the manifest* → timestamp that. Data files are timestamped transitively through the manifest, so the digests in the manifest are what verification checks per file.
-- **Verify**: open the ZIP → detect the format from `mimetype` (falling back to `ASiCManifest.xml` presence) → ASiC-S path in `Verify` or ASiC-E path in `VerifyExtended` → walk the timestamp chain.
+Per-domain behavior — container layout, the TSA conversation, the verification step model, renewal chains — lives in the living specs indexed by `docs/README.md`. What follows is only the repo-wide shape.
 
 ### Two services, both behind interfaces
 
@@ -48,12 +57,6 @@ Three projects in `AsicSharp.sln`:
 - **`IAsicService` / `AsicService`** — Create / verify / extract / renew for both formats, plus `GetContainerType` as a lightweight format probe that never throws.
 
 Both expose dual constructors: `IOptions<AsicTimestampOptions>` for DI (marked `[ActivatorUtilitiesConstructor]`) and raw `AsicTimestampOptions` for standalone use.
-
-### Verification model
-
-`Verify` does not throw on a bad container — every check becomes a `VerificationStep`, `IsValid` is "all steps passed", and `Error` is the concatenation of failing details. Adding a step therefore adds a new way for a container to be *invalid*; step names and ordering are asserted by tests.
-
-Renewal chains (`RenewAsync`, per ETSI EN 319 162-1 §5.4): every `META-INF/*.tst` is sorted lexicographically, and token *i* is verified against token *i-1*'s raw bytes — token 1 against the data file (ASiC-S) or the manifest (ASiC-E). `TimestampChain` is only populated when 2+ tokens exist (null stays backward compatible). The result's `Timestamp`/`TsaCertificate`/`HashAlgorithm` always come from token 1 — the original proof of existence. The hash algorithm used during verification is read from the token's OID, not from options.
 
 ### Key types
 
@@ -63,13 +66,6 @@ Renewal chains (`RenewAsync`, per ETSI EN 319 162-1 §5.4): every `META-INF/*.ts
 - **`AsicCreateResult` / `AsicVerifyResult` / `TimestampResult` / `TimestampChainEntry` / `VerificationStep`** (`Models/`) — Immutable, `required init` properties.
 - **`AsicConstants`** and **`AsicCrypto`** (`Services/`) — Internal: ETSI entry names/MIME types/namespace, and the shared hash + hex helpers. Visible to CLI and tests via `InternalsVisibleTo`.
 - **`ServiceCollectionExtensions`** (`Extensions/`) — `AddAsicSharp()` with action-based and `IConfigurationSection` overloads.
-
-### Container invariants to preserve
-
-- `mimetype` must be the **first** entry and written with `CompressionLevel.NoCompression`, UTF-8 without BOM (ETSI requirement).
-- `META-INF/README.txt` is a human-readable explainer held as const strings in `AsicService`; tests assert its content.
-- Renewal appends the new token with `ZipArchiveMode.Update` rather than rebuilding the ZIP, so previously timestamped bytes stay byte-identical.
-- Extraction sanitizes entry names through `Path.GetFileName` (Zip Slip defence) and rejects oversized entries.
 
 ### Exception Hierarchy
 
