@@ -4,70 +4,99 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AsicSharp is a .NET library and CLI tool for creating and verifying **ASiC-S** (Associated Signature Containers) with **RFC 3161 timestamps**. It proves that data existed at a specific point in time using trusted Timestamp Authorities (TSAs) — without requiring a signing certificate. Compliant with ETSI EN 319 162-1 and EU eIDAS.
+AsicSharp is a .NET library and CLI tool (`asicts`) for creating and verifying **ASiC** containers with **RFC 3161 timestamps** — **ASiC-S** (one file) and **ASiC-E** (many files + manifest). It proves that data existed at a specific point in time using trusted Timestamp Authorities (TSAs) — without requiring a signing certificate. Compliant with ETSI EN 319 162-1/-2, ETSI TS 102 918, and EU eIDAS.
 
 ## Build & Test Commands
 
 ```bash
 dotnet build                                                    # Build all projects
 dotnet build --configuration Release                            # Release build
-dotnet test --filter "Category!=Integration"                    # Run unit tests (exclude integration)
-dotnet test --filter "Category=Integration"                     # Run integration tests (requires network to TSA servers)
-dotnet test --filter "FullyQualifiedName~AsicServiceTests"      # Run a specific test class
-dotnet test --filter "DisplayName~CreateAsync_ShouldProduceValid" # Run a single test by name
+dotnet test --filter "Category!=Integration"                    # Unit tests
+dotnet test --filter "Category=Integration"                     # Integration tests (real TSA servers, needs network)
+dotnet test --filter "FullyQualifiedName~AsicServiceTests"      # A specific test class
+dotnet test --filter "DisplayName~CreateAsync_ShouldProduceValid" # A single test by name
+dotnet run --project src/AsicSharp.Cli -- verify file.asics -v  # Run the CLI from source
 dotnet pack src/AsicSharp/AsicSharp.csproj -c Release           # Pack the library NuGet
 dotnet pack src/AsicSharp.Cli/AsicSharp.Cli.csproj -c Release   # Pack the CLI tool
 ```
+
+The library sets `GeneratePackageOnBuild=true`, so a plain build already emits its `.nupkg`. There is no separate lint step — style comes from `.editorconfig` plus `TreatWarningsAsErrors`.
 
 ## Solution Structure
 
 Three projects in `AsicSharp.sln`:
 
-- **`src/AsicSharp`** — Core library (multi-target: `netstandard2.1`, `net8.0`, `net10.0`). Published as NuGet package. Uses PolySharp for netstandard2.1 polyfills.
-- **`src/AsicSharp.Cli`** — CLI tool (`net8.0`). Packaged as a dotnet global tool (`asicts`). Uses `System.CommandLine` for arg parsing.
-- **`tests/AsicSharp.Tests`** — xUnit tests (`net8.0`) with NSubstitute for mocking and AwesomeAssertions (the free Apache-2.0 fork of FluentAssertions; v8+ of FluentAssertions is commercially licensed). Integration tests (trait `Category=Integration`) hit real TSA servers and need network access.
+- **`src/AsicSharp`** — Core library (multi-target: `netstandard2.1`, `net8.0`, `net10.0`). Published as NuGet package `AsicSharp`. Uses PolySharp for netstandard2.1 polyfills.
+- **`src/AsicSharp.Cli`** — CLI (`net8.0`), assembly and tool command both named `asicts`, packaged as a dotnet global tool (`AsicSharp.Cli`).
+- **`tests/AsicSharp.Tests`** — xUnit (`net8.0`) with NSubstitute and AwesomeAssertions (the free Apache-2.0 fork of FluentAssertions; v8+ of FluentAssertions is commercially licensed — don't reintroduce it). Integration tests carry trait `Category=Integration`.
 
 ## Architecture
 
-### Core Library (`AsicSharp`)
+### Flow
 
-Two main services behind interfaces:
+- **Create ASiC-S**: hash the data → `ITsaClient` → token → build ZIP (`mimetype`, data file, `META-INF/timestamp.tst`, `META-INF/README.txt`, optional `META-INF/signature.p7s`).
+- **Create ASiC-E**: build `META-INF/ASiCManifest.xml` holding each file's digest → hash *the manifest* → timestamp that. Data files are timestamped transitively through the manifest, so the digests in the manifest are what verification checks per file.
+- **Verify**: open the ZIP → detect the format from `mimetype` (falling back to `ASiCManifest.xml` presence) → ASiC-S path in `Verify` or ASiC-E path in `VerifyExtended` → walk the timestamp chain.
 
-- **`ITsaClient` / `TsaClient`** — Sends RFC 3161 timestamp requests to a TSA over HTTP. Uses `Rfc3161TimestampRequest`/`Rfc3161TimestampToken` from `System.Security.Cryptography.Pkcs`. Designed as a typed `HttpClient` for DI.
-- **`IAsicService` / `AsicService`** — Orchestrates container creation, verification, and renewal. Builds ASiC-S ZIP containers (mimetype entry first, data file, `META-INF/timestamp.tst`, optional `META-INF/signature.p7s`). Supports timestamp renewal for long-term archival (`RenewAsync`) per ETSI EN 319 162-1 §5.4 — adds archive timestamps (`timestamp-002.tst`, `timestamp-003.tst`, etc.) that chain back to the original. Verification walks through structured steps returning `AsicVerifyResult` with a list of `VerificationStep` and optional `TimestampChain`.
+### Two services, both behind interfaces
 
-Both services have dual constructors: `IOptions<AsicTimestampOptions>` for DI (marked with `[ActivatorUtilitiesConstructor]`) and raw `AsicTimestampOptions` for standalone use.
+- **`ITsaClient` / `TsaClient`** — RFC 3161 requests over HTTP using `Rfc3161TimestampRequest`/`Rfc3161TimestampToken` from `System.Security.Cryptography.Pkcs`. Designed as a typed `HttpClient` for DI. Walks `TimestampAuthorityUrls` in order, falling through to the next URL on `HttpRequestException` or `TimestampAuthorityException`; throws the last failure only when every URL fails. Optional random nonce for replay protection.
+- **`IAsicService` / `AsicService`** — Create / verify / extract / renew for both formats, plus `GetContainerType` as a lightweight format probe that never throws.
 
-### Key Types
+Both expose dual constructors: `IOptions<AsicTimestampOptions>` for DI (marked `[ActivatorUtilitiesConstructor]`) and raw `AsicTimestampOptions` for standalone use.
 
-- **`AsicTimestampOptions`** (`Configuration/`) — All config: TSA URL, hash algorithm, signing certificate, timeout, nonce policy. Config section name: `"AsicTimestamp"`.
-- **`WellKnownTsa`** — Static constants for common TSA URLs (DigiCert default).
-- **`AsicCreateResult` / `AsicVerifyResult` / `TimestampResult` / `TimestampChainEntry`** (`Models/`) — Immutable result objects with `required init` properties. `TimestampChainEntry` represents one link in a renewal chain.
-- **`AsicConstants`** (`Services/`) — Internal constants for ZIP entry names and paths per ETSI spec. Visible to CLI and Tests via `InternalsVisibleTo`.
-- **`ServiceCollectionExtensions`** (`Extensions/`) — `AddAsicSharp()` DI registration with overloads for action-based config and `IConfigurationSection` binding.
+### Verification model
+
+`Verify` does not throw on a bad container — every check becomes a `VerificationStep`, `IsValid` is "all steps passed", and `Error` is the concatenation of failing details. Adding a step therefore adds a new way for a container to be *invalid*; step names and ordering are asserted by tests.
+
+Renewal chains (`RenewAsync`, per ETSI EN 319 162-1 §5.4): every `META-INF/*.tst` is sorted lexicographically, and token *i* is verified against token *i-1*'s raw bytes — token 1 against the data file (ASiC-S) or the manifest (ASiC-E). `TimestampChain` is only populated when 2+ tokens exist (null stays backward compatible). The result's `Timestamp`/`TsaCertificate`/`HashAlgorithm` always come from token 1 — the original proof of existence. The hash algorithm used during verification is read from the token's OID, not from options.
+
+### Key types
+
+- **`AsicTimestampOptions`** (`Configuration/`) — Config section `"AsicTimestamp"`. TSA URL(s), hash algorithm, timeout, nonce and signer-cert policy, `SigningCertificate` (when set, a detached CMS/CAdES `signature.p7s` is added), and `MaxFileSize` (10 MB default, `null` disables) enforced both on create and per-ZIP-entry on read.
+- **`WellKnownTsa`** — TSA URL constants (DigiCert default; also Sectigo, GlobalSign, FreeTSA, Apple, Entrust).
+- **`AsicContainerType`** — `None` / `Simple` / `Extended`.
+- **`AsicCreateResult` / `AsicVerifyResult` / `TimestampResult` / `TimestampChainEntry` / `VerificationStep`** (`Models/`) — Immutable, `required init` properties.
+- **`AsicConstants`** and **`AsicCrypto`** (`Services/`) — Internal: ETSI entry names/MIME types/namespace, and the shared hash + hex helpers. Visible to CLI and tests via `InternalsVisibleTo`.
+- **`ServiceCollectionExtensions`** (`Extensions/`) — `AddAsicSharp()` with action-based and `IConfigurationSection` overloads.
+
+### Container invariants to preserve
+
+- `mimetype` must be the **first** entry and written with `CompressionLevel.NoCompression`, UTF-8 without BOM (ETSI requirement).
+- `META-INF/README.txt` is a human-readable explainer held as const strings in `AsicService`; tests assert its content.
+- Renewal appends the new token with `ZipArchiveMode.Update` rather than rebuilding the ZIP, so previously timestamped bytes stay byte-identical.
+- Extraction sanitizes entry names through `Path.GetFileName` (Zip Slip defence) and rejects oversized entries.
 
 ### Exception Hierarchy
 
 `AsicTimestampException` (base) → `TimestampAuthorityException`, `InvalidAsicContainerException`, `AsicVerificationException`.
 
+## CLI
+
+Commands: `stamp` (multiple file arguments switch it to ASiC-E automatically), `verify` (`-v` prints every step; exit code 1 when invalid), `renew` (rewrites the container in place), `extract`, `info`.
+
+`System.CommandLine` is pinned to `2.0.0-beta4`, whose API (`SetHandler`, `InvocationContext`, `GetValueForOption`) differs from the stable 2.0 shape — don't modernize the call style without also moving the pin.
+
 ## Build Configuration
 
-- **Central package management** via `Directory.Packages.props` — all package versions defined there.
-- **`Directory.Build.props`** — Shared properties: `TreatWarningsAsErrors`, `Nullable enable`, `AnalysisLevel latest-recommended`, `LangVersion latest`. Author: Steve Hansen.
-- **PolySharp** provides polyfills for `init`, `required`, records, etc. on `netstandard2.1`.
-- **MinVer** for automatic versioning from git tags. **ThisAssembly.Git** for assembly info.
-- `Convert.ToHexString` is not available on netstandard2.1 — use the `#if NET5_0_OR_GREATER` guarded `ToHexString` helper in `AsicService`.
-- Suppressed analyzers: CA1848 (LoggerMessage delegates), CA5350 (SHA1 needed for TSA compat), CS1591 (XML doc inheritance), CA1707 (test underscores).
+- **Central package management** via `Directory.Packages.props` — all versions live there.
+- **`Directory.Build.props`** — `TreatWarningsAsErrors`, `Nullable enable`, `ImplicitUsings enable`, `AnalysisLevel latest-recommended`, `LangVersion latest`, package metadata. Author: Steve Hansen.
+- **PolySharp** polyfills `init`, `required`, records, etc. on netstandard2.1. **MinVer** derives versions from git tags; **ThisAssembly.Git** injects git assembly info.
+- netstandard2.1 gaps to guard: `Convert.ToHexString` (`#if NET5_0_OR_GREATER`, wrapped by `AsicCrypto.ToHexString`), and the cancellation-token overloads of `File.ReadAllBytesAsync` / `HttpContent.ReadAsByteArrayAsync` (`#if NET8_0_OR_GREATER`).
+- Suppressed analyzers: CA1848/CA1873 (LoggerMessage delegates), CA5350 (SHA1 kept for TSA compat), CS1591 (XML docs inherited from interfaces), CA1707 (test underscores).
+
+## Testing Notes
+
+Unit tests substitute `ITsaClient` and feed a **non-DER placeholder** token (`CreateFakeTimestampToken` returns plain UTF-8 bytes), so they only cover container structure and hashing. Anything that exercises token decoding, TSA signature validation, or renewal-chain verification has to be an integration test against a real TSA.
 
 ## CI & Publishing
 
-- **CI** (`.github/workflows/ci.yml`): builds on .NET 8 and 10, runs unit tests, runs integration tests separately (`continue-on-error: true` since TSAs may be unavailable).
-- **Publish** (`.github/workflows/publish.yml`): Tag-triggered (`X.Y.Z`), uses OIDC trusted publishing via `nuget/login@v1` with `vars.NUGET_USER`. No API key secrets needed.
+- **CI** (`.github/workflows/ci.yml`): builds on .NET 8 and 10, runs unit tests, then integration tests in a separate job with `continue-on-error: true` since TSAs may be unavailable.
+- **Publish** (`.github/workflows/publish.yml`): tag-triggered (`X.Y.Z`), OIDC trusted publishing via `nuget/login@v1` with `vars.NUGET_USER`. No API key secrets.
 
 ## Code Style
 
-- 4-space indentation, UTF-8, LF line endings (`.editorconfig`)
-- 2-space indent for XML/JSON/YAML files
+- 4-space indentation, UTF-8, LF line endings (`.editorconfig`); 2-space for XML/JSON/YAML
 - File-scoped namespaces
 - Warnings as errors
 - **Conventional Commits**: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `ci:`, `chore:`
