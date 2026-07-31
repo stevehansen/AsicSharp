@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AsicSharp is a .NET library and CLI tool (`asicts`) for creating and verifying **ASiC** containers with **RFC 3161 timestamps** — **ASiC-S** (one file) and **ASiC-E** (many files + manifest). It proves that data existed at a specific point in time using trusted Timestamp Authorities (TSAs) — without requiring a signing certificate. Compliant with ETSI EN 319 162-1/-2, ETSI TS 102 918, and EU eIDAS.
 
+## Ubiquitous Language
+
+`UBIQUITOUS_LANGUAGE.md` (repo root) is the canonical domain glossary — the agreed vocabulary for containers, timestamping, verification and renewal. Use these terms in code, XML doc comments, CLI output and prose; consult its "Flagged ambiguities" before naming new concepts (notably *timestamp* = instant vs. token vs. act, *entry* = ZIP entry vs. manifest reference vs. chain link, *valid* = cryptographic integrity and never a trust decision, and *signature* = the TSA's signature inside a token vs. the optional CAdES signature). Update it when introducing or renaming a domain concept.
+
 ## Build & Test Commands
 
 ```bash
