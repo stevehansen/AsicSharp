@@ -1,6 +1,6 @@
 # AsicSharp - STRIDE Threat Model
 
-**Version:** 1.6
+**Version:** 1.7
 **Created:** 2026-02-28
 **Next Review:** 2029-02-28
 
@@ -163,13 +163,13 @@ AsicSharp is a .NET library and CLI tool for creating and verifying ASiC-S (Simp
 |----|--------|-------------|------------|--------|-------|---------|------------|
 | D-1 | TSA unavailability | TSA server is down or rate-limits requests | 2 (Low) | 2 (Medium) | 4 | V13 Configuration / caller infra (retry, failover) | Configurable timeout (default 30s). `HttpRequestException` thrown on failure. Caller can retry or use alternate TSA. |
 | D-2 | ZIP bomb in container | Malicious ASiC container with highly compressed entries causes memory exhaustion during verification or `GetContainerType` | 1 (Very Low) | 3 (High) | 3 | V5 File Handling | Data entries are size-validated (`ValidateEntrySize` against `MaxFileSize`, default 10 MB) before reading during verify/extract. **Residual:** metadata entries (mimetype, ASiCManifest, `.tst`, `.p7s`) are read without a size cap — expansion is bounded only by the deflate ratio (~1032:1). `GetContainerType` wraps parsing in a catch-all and returns `None` on malformed input. |
-| D-3 | Large file processing | Very large input file(s) cause memory pressure (all data loaded via `ReadAllBytes`). ASiC-E amplifies this with multiple files. | 2 (Low) | 2 (Medium) | 4 | V5 File Handling | **Mitigated.** Configurable `MaxFileSize` option (default 10 MB) rejects oversized files before processing. Set to `null` to disable. Stream-based `CreateAsync(Stream, ...)` overload also available for ASiC-S. |
+| D-3 | Large file processing | Very large input file(s) cause memory pressure. ASiC-E amplifies this with multiple files. | 2 (Low) | 2 (Medium) | 4 | V5 File Handling | **Mitigated.** Configurable `MaxFileSize` option (default 10 MB) rejects oversized files before processing; set to `null` to disable. Genuinely streaming paths exist for ASiC-S: `CreateToStreamAsync` hashes the payload in chunks and writes the container straight to the caller's stream (measured at ~316 KB allocated for a 64 MB payload), `ExtractToStreamAsync` copies a data file out without materialising it, and `Verify(Stream)` reads the container in place — computing ASiC-E manifest digests straight from the archive, so no ASiC-E data file is ever inflated. **Residual:** the ASiC-S verify path still populates `AsicVerifyResult.DataBytes`, so that profile's data file is materialised; ASiC-E creation and renewal remain `byte[]`-only. Note the earlier `CreateAsync(Stream, ...)` overload is *not* one of these — it copies to `byte[]` internally and is retained for compatibility. |
 | D-4 | Unbounded timestamp chain growth | Repeated `RenewAsync` calls grow the container by one .tst entry each time | 1 (Very Low) | 1 (Low) | 1 | V5 File Handling | Each archive timestamp is small (~2-4 KB). Renewal is an explicit caller action, not automatic. Container size growth is negligible over typical renewal cycles (years). |
 
 **Countermeasures in place:**
 - Configurable HTTP timeout (default 30 seconds)
 - Configurable per-file size limit (`MaxFileSize`, default 10 MB) enforced on creation and on data entries during verify/extract (`ValidateEntrySize`)
-- Stream overload for memory-efficient creation
+- Genuinely streaming create/verify/extract for ASiC-S (`CreateToStreamAsync`, `Verify(Stream)`, `ExtractToStreamAsync`); all three reject a non-seekable stream rather than buffering it in full
 - Multiple well-known TSA URLs available as fallbacks
 - `CancellationToken` support on async operations
 - `GetContainerType` fails closed (`None`) on malformed containers
@@ -238,6 +238,7 @@ None — all previously high-priority threats have been mitigated.
 | 1.4 | 2026-07-09 | GetContainerType / code quality review | Added T-8 (hash algorithm confusion — mitigated via [#7](https://github.com/stevehansen/AsicSharp/issues/7)/[#8](https://github.com/stevehansen/AsicSharp/issues/8)); updated D-2 for `ValidateEntrySize` and `GetContainerType`, noted metadata entry size-cap residual; backfilled ASVS 5.0 control column for all threats |
 | 1.5 | 2026-07-31 | Domain documentation pass | Corrected T-7: chain order was derived from the entry name, inverting the chain — every renewed container failed verification and repeat renewals forked off the original token; fixed and pinned by three unit facts plus a renewal integration test. Added T-9 (unlisted ASiC-E data file verifies as valid, open — [#25](https://github.com/stevehansen/AsicSharp/issues/25)) and its residual-risk row; qualified the ASiC-E digest countermeasure accordingly |
 | 1.6 | 2026-08-27 | ASiC-E completeness pass | T-9 partially mitigated: added the informational `Manifest completeness` verification step and `AsicVerifyResult.UnreferencedFileNames`, and restricted both `Extract` and `ExtractAll` to manifest-referenced files for ASiC-E, closing the verify-then-extract exposure — `Extract` picked the first entry in attacker-chosen ZIP order. Impact lowered High → Medium (score 6 → 4); residual-risk row rewritten to record that `IsValid` still ignores completeness by design |
+| 1.7 | 2026-08-27 | Stream overloads | Corrected D-3, whose mitigation credited a `CreateAsync(Stream, ...)` overload that copies to `byte[]` internally. Added the genuinely streaming `CreateToStreamAsync` / `Verify(Stream)` / `ExtractToStreamAsync` paths and recorded the remaining residual (ASiC-S `DataBytes`, ASiC-E create and renewal). All three refuse a non-seekable stream, so an unknown-length input is never buffered without bound |
 
 ---
 

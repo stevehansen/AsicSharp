@@ -14,6 +14,16 @@ internal static class AsicCrypto
         return algorithm.ComputeHash(data);
     }
 
+    /// <summary>
+    /// Hashes a stream from its current position to its end, reading in chunks so a large
+    /// file is never held in memory at once.
+    /// </summary>
+    public static byte[] ComputeHash(Stream data, HashAlgorithmName algorithmName)
+    {
+        using var algorithm = CreateHashAlgorithm(algorithmName);
+        return algorithm.ComputeHash(data);
+    }
+
     public static HashAlgorithm CreateHashAlgorithm(HashAlgorithmName name)
     {
         if (name == HashAlgorithmName.SHA256) return SHA256.Create();

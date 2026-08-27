@@ -46,11 +46,78 @@ public interface IAsicService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Create an ASiC-S container, writing it straight to <paramref name="output"/> so that
+    /// neither the payload nor the finished container is ever held in memory in full.
+    /// </summary>
+    /// <param name="data">
+    /// The data to timestamp. Must be seekable: the hash has to reach the TSA before the first
+    /// byte can be written, so the stream is read twice.
+    /// </param>
+    /// <param name="fileName">The filename to use inside the container.</param>
+    /// <param name="output">The writable stream to write the container to. Need not be seekable.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The timestamp metadata and how many bytes were written.</returns>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="data"/> cannot seek or is empty, <paramref name="output"/> cannot be
+    /// written, or <paramref name="fileName"/> is empty or contains a path separator.
+    /// </exception>
+    /// <exception cref="NotSupportedException">
+    /// A signing certificate is configured. A CAdES signature has no streaming form, so adding
+    /// one would buffer the whole payload — exactly what this overload exists to avoid.
+    /// </exception>
+    /// <exception cref="TimestampAuthorityException">Every configured TSA URL failed.</exception>
+    Task<AsicStreamCreateResult> CreateToStreamAsync(
+        Stream data,
+        string fileName,
+        Stream output,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Verify an ASiC-S container and return detailed results.
     /// </summary>
     /// <param name="containerBytes">The raw ASiC-S container bytes.</param>
     /// <returns>Verification result with details.</returns>
     AsicVerifyResult Verify(byte[] containerBytes);
+
+    /// <summary>
+    /// Verify a container read directly from a stream, without copying it into a byte array.
+    /// </summary>
+    /// <param name="container">
+    /// The container to verify. Must be seekable — a forward-only stream would be buffered in
+    /// full by the ZIP reader, defeating the purpose.
+    /// </param>
+    /// <returns>Verification result with details. Never throws for an invalid container.</returns>
+    /// <exception cref="ArgumentException"><paramref name="container"/> cannot seek.</exception>
+    /// <remarks>
+    /// For ASiC-E no data file is materialised: each manifest digest is computed straight from
+    /// the archive. For ASiC-S the data file is still read into
+    /// <see cref="AsicVerifyResult.DataBytes"/>, which that profile's result contract promises.
+    /// </remarks>
+    AsicVerifyResult Verify(Stream container);
+
+    /// <summary>
+    /// Extract the container's data file straight to <paramref name="output"/>, without holding
+    /// either the container or the file in memory.
+    /// </summary>
+    /// <param name="container">The container to read. Must be seekable.</param>
+    /// <param name="output">The writable stream to write the data file to.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The sanitized name of the data file that was written.</returns>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="container"/> cannot seek or <paramref name="output"/> cannot be written.
+    /// </exception>
+    /// <exception cref="InvalidAsicContainerException">
+    /// The container holds no data file whose proof of existence covers it, the entry name is
+    /// unusable, or the entry exceeds <see cref="Configuration.AsicTimestampOptions.MaxFileSize"/>.
+    /// </exception>
+    /// <remarks>
+    /// For ASiC-E this writes the first ASiCManifest-referenced data file, mirroring
+    /// <see cref="Extract"/>. Use <see cref="ExtractAll"/> when there may be several.
+    /// </remarks>
+    Task<string> ExtractToStreamAsync(
+        Stream container,
+        Stream output,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Verify an ASiC-S container from a file on disk.
@@ -193,6 +260,103 @@ public sealed class AsicService : IAsicService
         };
     }
 
+    public async Task<AsicStreamCreateResult> CreateToStreamAsync(
+        Stream data,
+        string fileName,
+        Stream output,
+        CancellationToken cancellationToken = default)
+    {
+        RequireSeekable(data, nameof(data));
+        RequireWritable(output, nameof(output));
+        if (string.IsNullOrWhiteSpace(fileName))
+            throw new ArgumentException("File name cannot be null or empty.", nameof(fileName));
+
+        // A CAdES signature is built from a ContentInfo over the whole payload and has no
+        // streaming form, so honouring the option here would silently buffer the very bytes
+        // this overload exists to avoid buffering.
+        if (_options.SigningCertificate != null)
+            throw new NotSupportedException(
+                "CreateToStreamAsync cannot add a CAdES signature, which requires the whole data in memory. " +
+                "Clear AsicTimestampOptions.SigningCertificate or use the byte[] overload.");
+
+        ValidateFileName(fileName);
+
+        var dataStart = data.Position;
+        var dataLength = data.Length - dataStart;
+        if (dataLength <= 0)
+            throw new ArgumentException("Data stream is empty.", nameof(data));
+
+        ValidateFileSize(fileName, dataLength);
+
+        _logger.LogDebug(
+            "Creating ASiC-S container for {FileName} ({Size} bytes) via streams", fileName, dataLength);
+
+        // First pass hashes the payload in chunks; the second writes it into the ZIP. That is
+        // why the input must seek: the TSA needs the hash before any byte can be written.
+        var hash = AsicCrypto.ComputeHash(data, _options.HashAlgorithm);
+        var hashHex = ToHexString(hash);
+
+        var tsResult = await _tsaClient.RequestTimestampAsync(
+            hash, _options.HashAlgorithm, cancellationToken);
+
+        data.Seek(dataStart, SeekOrigin.Begin);
+
+        var counting = new CountingStream(output);
+        using (var zip = new ZipArchive(counting, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            WriteMimeTypeEntry(zip, AsicConstants.MimeType);
+
+            var dataEntry = zip.CreateEntry(fileName, CompressionLevel.Optimal);
+            using (var entryStream = dataEntry.Open())
+            {
+                await data.CopyToAsync(entryStream, StreamCopyBufferSize, cancellationToken);
+            }
+
+            WriteBytesEntry(zip, AsicConstants.TimestampEntryPath, tsResult.TokenBytes);
+            WriteTextEntry(zip, AsicConstants.ReadmeEntryPath, ReadmeContentSimple);
+        }
+
+        _logger.LogInformation(
+            "Created ASiC-S container: {FileName}, {Size} bytes written, timestamp {Timestamp:O}",
+            fileName, counting.BytesWritten, tsResult.Timestamp);
+
+        return new AsicStreamCreateResult
+        {
+            Timestamp = tsResult.Timestamp,
+            HashAlgorithm = _options.HashAlgorithm.Name!,
+            DataHash = hashHex,
+            TimestampAuthorityUrl = tsResult.TimestampAuthorityUrl ?? _options.TimestampAuthorityUrl,
+            BytesWritten = counting.BytesWritten,
+            FileNames = [fileName],
+            FileHashes = new Dictionary<string, string>(1, StringComparer.Ordinal) { [fileName] = hashHex }
+        };
+    }
+
+    public async Task<string> ExtractToStreamAsync(
+        Stream container,
+        Stream output,
+        CancellationToken cancellationToken = default)
+    {
+        RequireSeekable(container, nameof(container));
+        RequireWritable(output, nameof(output));
+
+        using var zip = new ZipArchive(container, ZipArchiveMode.Read, leaveOpen: true);
+        var dataEntry = FindCoveredDataEntries(zip).FirstOrDefault()
+            ?? throw new InvalidAsicContainerException("No data file found in container.");
+
+        // Sanitize entry name to prevent path traversal (Zip Slip)
+        var fileName = Path.GetFileName(dataEntry.FullName);
+        if (string.IsNullOrEmpty(fileName))
+            throw new InvalidAsicContainerException("Data entry has an invalid file name.");
+
+        ValidateEntrySize(dataEntry);
+
+        using var entryStream = dataEntry.Open();
+        await entryStream.CopyToAsync(output, StreamCopyBufferSize, cancellationToken);
+
+        return fileName;
+    }
+
     public async Task<AsicCreateResult> CreateAsync(
         Stream data,
         string fileName,
@@ -224,12 +388,29 @@ public sealed class AsicService : IAsicService
         if (containerBytes == null || containerBytes.Length == 0)
             throw new ArgumentException("Container bytes cannot be null or empty.", nameof(containerBytes));
 
+        return VerifyContainer(() => OpenZip(containerBytes));
+    }
+
+    public AsicVerifyResult Verify(Stream container)
+    {
+        RequireSeekable(container, nameof(container));
+
+        return VerifyContainer(() => new ZipArchive(container, ZipArchiveMode.Read, leaveOpen: true));
+    }
+
+    /// <summary>
+    /// Runs every verification step over one container. The archive is opened through a
+    /// factory so that a malformed container is reported as a failed result from inside the
+    /// same try block, whichever overload the caller used.
+    /// </summary>
+    private AsicVerifyResult VerifyContainer(Func<ZipArchive> openArchive)
+    {
         var steps = new List<VerificationStep>();
 
         try
         {
             // Step 1: Parse the ZIP
-            using var zip = OpenZip(containerBytes);
+            using var zip = openArchive();
             steps.Add(new VerificationStep { Name = "Container structure", Passed = true, Detail = "Valid ZIP archive" });
 
             // Step 2: Validate MIME type and detect container type
@@ -679,6 +860,8 @@ public sealed class AsicService : IAsicService
 
     #region Private methods
 
+    private const int StreamCopyBufferSize = 81920;
+
     private const string ReadmeContentSimple =
         """
         This is an ASiC-S (Associated Signature Container) compliant with ETSI EN 319 162-1.
@@ -723,49 +906,76 @@ public sealed class AsicService : IAsicService
         More information: https://github.com/stevehansen/AsicSharp
         """;
 
+    /// <summary>Writes the mimetype entry, which ETSI requires first and uncompressed.</summary>
+    private static void WriteMimeTypeEntry(ZipArchive zip, string mimeType)
+    {
+        var entry = zip.CreateEntry(AsicConstants.MimeTypeEntryName, CompressionLevel.NoCompression);
+        using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(false));
+        writer.Write(mimeType);
+    }
+
+    private static void WriteBytesEntry(ZipArchive zip, string entryName, byte[] bytes)
+    {
+        var entry = zip.CreateEntry(entryName, CompressionLevel.Optimal);
+        using var stream = entry.Open();
+        stream.Write(bytes, 0, bytes.Length);
+    }
+
+    private static void WriteTextEntry(ZipArchive zip, string entryName, string text)
+    {
+        var entry = zip.CreateEntry(entryName, CompressionLevel.Optimal);
+        using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(false));
+        writer.Write(text);
+    }
+
+    /// <summary>
+    /// Counts the bytes passing through to the wrapped stream, so a streaming create can
+    /// report the container's size without requiring the output to be seekable.
+    /// </summary>
+    private sealed class CountingStream : Stream
+    {
+        private readonly Stream _inner;
+
+        public CountingStream(Stream inner) => _inner = inner;
+
+        public long BytesWritten { get; private set; }
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => BytesWritten;
+            set => throw new NotSupportedException();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            _inner.Write(buffer, offset, count);
+            BytesWritten += count;
+        }
+
+        public override void Flush() => _inner.Flush();
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+    }
+
     private static byte[] BuildContainer(
         byte[] data, string fileName, byte[] timestampToken, byte[]? signatureBytes)
     {
         using var ms = new MemoryStream();
         using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
         {
-            // 1. mimetype — MUST be first entry, stored uncompressed (ETSI requirement)
-            var mimeEntry = zip.CreateEntry(AsicConstants.MimeTypeEntryName, CompressionLevel.NoCompression);
-            using (var writer = new StreamWriter(mimeEntry.Open(), new UTF8Encoding(false)))
-            {
-                writer.Write(AsicConstants.MimeType);
-            }
+            WriteMimeTypeEntry(zip, AsicConstants.MimeType);
+            WriteBytesEntry(zip, fileName, data);
+            WriteBytesEntry(zip, AsicConstants.TimestampEntryPath, timestampToken);
+            WriteTextEntry(zip, AsicConstants.ReadmeEntryPath, ReadmeContentSimple);
 
-            // 2. The data file
-            var dataEntry = zip.CreateEntry(fileName, CompressionLevel.Optimal);
-            using (var stream = dataEntry.Open())
-            {
-                stream.Write(data, 0, data.Length);
-            }
-
-            // 3. Timestamp token in META-INF/
-            var tsEntry = zip.CreateEntry(AsicConstants.TimestampEntryPath, CompressionLevel.Optimal);
-            using (var stream = tsEntry.Open())
-            {
-                stream.Write(timestampToken, 0, timestampToken.Length);
-            }
-
-            // 4. README in META-INF/
-            var readmeEntry = zip.CreateEntry(AsicConstants.ReadmeEntryPath, CompressionLevel.Optimal);
-            using (var writer = new StreamWriter(readmeEntry.Open(), new UTF8Encoding(false)))
-            {
-                writer.Write(ReadmeContentSimple);
-            }
-
-            // 5. Optional CMS signature in META-INF/
             if (signatureBytes != null)
-            {
-                var sigEntry = zip.CreateEntry(AsicConstants.SignatureEntryPath, CompressionLevel.Optimal);
-                using (var stream = sigEntry.Open())
-                {
-                    stream.Write(signatureBytes, 0, signatureBytes.Length);
-                }
-            }
+                WriteBytesEntry(zip, AsicConstants.SignatureEntryPath, signatureBytes);
         }
 
         return ms.ToArray();
@@ -862,6 +1072,30 @@ public sealed class AsicService : IAsicService
         {
             return new CmsVerification(false, null, $"CMS signature invalid: {ex.Message}");
         }
+    }
+
+    private static void RequireWritable(Stream stream, string paramName)
+    {
+        if (stream == null)
+            throw new ArgumentNullException(paramName);
+        if (!stream.CanWrite)
+            throw new ArgumentException("Stream must be writable.", paramName);
+    }
+
+    /// <summary>
+    /// Rejects a stream that cannot seek. <see cref="ZipArchive"/> in read mode does not fail
+    /// on a forward-only stream — it silently buffers the whole thing into memory, which would
+    /// defeat the entire point of the stream overloads. Better to say so than to pretend.
+    /// </summary>
+    private static void RequireSeekable(Stream stream, string paramName)
+    {
+        if (stream == null)
+            throw new ArgumentNullException(paramName);
+        if (!stream.CanSeek)
+            throw new ArgumentException(
+                "Stream must be seekable. A forward-only stream would have to be buffered in full, " +
+                "which defeats the purpose of this overload — copy it to a file or use the byte[] overload instead.",
+                paramName);
     }
 
     private static ZipArchive OpenZip(byte[] bytes)
@@ -1048,8 +1282,7 @@ public sealed class AsicService : IAsicService
             var hashAlg = XmlUriToHashAlgorithmName(algUri);
 
             ValidateEntrySize(entry);
-            var fileBytes = ReadEntryBytes(entry);
-            var actualHash = ComputeHash(fileBytes, hashAlg);
+            var actualHash = ComputeEntryHash(entry, hashAlg);
             var actualDigest = Convert.ToBase64String(actualHash);
 
             var digestMatch = actualDigest == expectedDigest;
@@ -1058,7 +1291,7 @@ public sealed class AsicService : IAsicService
                 Name = $"Data file: {uri}",
                 Passed = digestMatch,
                 Detail = digestMatch
-                    ? $"Digest verified ({fileBytes.Length} bytes)"
+                    ? $"Digest verified ({entry.Length} bytes)"
                     : "Digest mismatch — file has been modified"
             });
         }
@@ -1302,6 +1535,16 @@ public sealed class AsicService : IAsicService
 
     private static byte[] ComputeHash(byte[] data, HashAlgorithmName algorithmName)
         => AsicCrypto.ComputeHash(data, algorithmName);
+
+    /// <summary>
+    /// Hashes a ZIP entry straight from the archive, so verifying a large data file never
+    /// inflates it into memory. Only use this where the bytes themselves are not needed.
+    /// </summary>
+    private static byte[] ComputeEntryHash(ZipArchiveEntry entry, HashAlgorithmName algorithmName)
+    {
+        using var stream = entry.Open();
+        return AsicCrypto.ComputeHash(stream, algorithmName);
+    }
 
     private static HashAlgorithmName OidToHashAlgorithmName(System.Security.Cryptography.Oid oid)
     {

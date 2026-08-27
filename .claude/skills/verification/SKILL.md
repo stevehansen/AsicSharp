@@ -21,6 +21,7 @@ Reporting, check by check, whether a container's bytes are unaltered — and not
 - **In ASiC-E a swapped file fails at the manifest digest step, not the token step** — the token still verifies.
 - **Manifest presence outranks the mimetype** when routing to the ASiC-E path.
 - **Step names and ordering are contract** — asserted by tests, printed verbatim by `verify -v`.
+- **`Verify(byte[])` and `Verify(Stream)` share `VerifyContainer(Func<ZipArchive>)`** and must stay step-for-step identical; the stream overload throws on a non-seekable stream. ASiC-E digests come from `ComputeEntryHash` (straight off the archive, so the `Data file: <uri>` detail reports `entry.Length`); the ASiC-S path still materialises `DataBytes`.
 
 ## Key files / reuse
 

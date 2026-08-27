@@ -29,6 +29,8 @@ The container as a *structure*: ETSI ZIP layout, the two profiles, manifest cons
 ## Gotchas
 
 - **`Extract` on ASiC-E returns only the first *manifest-referenced* data file** (asserted, intended). Use `ExtractAll` when the profile is unknown.
+- **`CreateToStreamAsync` / `ExtractToStreamAsync` are the genuinely streaming ASiC-S paths** and return `AsicStreamCreateResult` (no `ContainerBytes`). Both **throw on a non-seekable stream** — create reads the payload twice, and `ZipArchive` would silently buffer a forward-only read stream. `CreateToStreamAsync` throws `NotSupportedException` if a `SigningCertificate` is set. ASiC-E create and renewal are `byte[]`-only.
+- **All container writers share `WriteMimeTypeEntry`/`WriteBytesEntry`/`WriteTextEntry`** — put entry-name or compression changes there, not in one builder.
 - **`Extract` and `ExtractAll` filter ASiC-E through the manifest** (shared `FindCoveredDataEntries`) — only referenced files come back, so neither can hand out uncovered bytes, and `Extract` no longer depends on attacker-chosen ZIP order. Falls back to every data entry when the manifest is unparseable; ASiC-S is unfiltered (no manifest). See `UnreferencedFileNames` on the verify side.
 - **Nothing enforces one data file for ASiC-S on read.**
 - **`.asics`/`.asice` is a CLI default only** — no code reads the extension; detection is mimetype-then-manifest, and manifest presence wins.
