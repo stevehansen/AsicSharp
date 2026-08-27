@@ -60,7 +60,8 @@ Entry names, MIME types and the ETSI namespace are all in [`src/AsicSharp/Servic
 - **The `.asics` / `.asice` extension is a CLI default only.** No code reads it; format detection is mimetype-then-manifest. Don't infer the profile from a path.
 - **A manifest present with no `mimetype` at all reports `Extended`** (asserted). Manifest presence outranks a missing or wrong mimetype — for both `GetContainerType` and `Verify`'s routing.
 - **ASiC-E data files are stored under their raw name and read back under the raw manifest URI.** `AsicVerifyResult.FileNames` is unsanitized manifest text on the ASiC-E path, while the ASiC-S path passes it through `Path.GetFileName`. Sanitize before you touch the filesystem — the CLI's `extract` goes through `ExtractAll`, which does; a caller reading `FileNames` directly gets no such help.
-- **`AsicCreateResult.DataHash` means different things per profile:** the data file's hash for ASiC-S, the *manifest's* hash for ASiC-E. Same property, different subject ([#9](https://github.com/stevehansen/AsicSharp/issues/9) tracks the related `FileNames` gap).
+- **`AsicCreateResult.DataHash` means different things per profile:** the data file's hash for ASiC-S, the *manifest's* hash for ASiC-E. Same property, different subject — which is why `FileHashes` exists ([#9](https://github.com/stevehansen/AsicSharp/issues/9)): it is per-file on both profiles, so a caller recording proof per file never has to branch. `asicts stamp` labels the ASiC-E value "Manifest" rather than "Hash" for the same reason.
+- **`AsicCreateResult.FileNames` and `FileHashes` are populated on both create profiles but null after a renewal**, which adds a token and touches no data file. The ASiC-E hashes are the very digests `BuildAsicManifest` wrote — it reports them through an `out` parameter rather than having the caller recompute, so the two can never drift.
 
 ## Executable references
 

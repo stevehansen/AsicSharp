@@ -187,7 +187,9 @@ public sealed class AsicService : IAsicService
             Timestamp = tsResult.Timestamp,
             HashAlgorithm = _options.HashAlgorithm.Name!,
             DataHash = hashHex,
-            TimestampAuthorityUrl = tsResult.TimestampAuthorityUrl ?? _options.TimestampAuthorityUrl
+            TimestampAuthorityUrl = tsResult.TimestampAuthorityUrl ?? _options.TimestampAuthorityUrl,
+            FileNames = [fileName],
+            FileHashes = new Dictionary<string, string>(1, StringComparer.Ordinal) { [fileName] = hashHex }
         };
     }
 
@@ -486,7 +488,7 @@ public sealed class AsicService : IAsicService
         _logger.LogDebug("Creating ASiC-E container for {Count} files", fileList.Count);
 
         // Compute hash of each file and build manifest
-        var manifestBytes = BuildAsicManifest(fileList, _options.HashAlgorithm);
+        var manifestBytes = BuildAsicManifest(fileList, _options.HashAlgorithm, out var fileHashes);
 
         // Hash the manifest and get timestamp
         var manifestHash = ComputeHash(manifestBytes, _options.HashAlgorithm);
@@ -515,7 +517,9 @@ public sealed class AsicService : IAsicService
             Timestamp = tsResult.Timestamp,
             HashAlgorithm = _options.HashAlgorithm.Name!,
             DataHash = manifestHashHex,
-            TimestampAuthorityUrl = tsResult.TimestampAuthorityUrl ?? _options.TimestampAuthorityUrl
+            TimestampAuthorityUrl = tsResult.TimestampAuthorityUrl ?? _options.TimestampAuthorityUrl,
+            FileNames = fileList.Select(f => f.FileName).ToList(),
+            FileHashes = fileHashes
         };
     }
 
@@ -922,10 +926,17 @@ public sealed class AsicService : IAsicService
 
     private static readonly XNamespace AsicNs = AsicConstants.AsicManifestNamespace;
 
+    /// <summary>
+    /// Builds the ASiCManifest and reports the hex-encoded digest it recorded for each
+    /// file, so callers report the manifest's own hashes rather than recomputing them.
+    /// </summary>
     private static byte[] BuildAsicManifest(
-        List<(string FileName, byte[] Data)> files, HashAlgorithmName hashAlgorithm)
+        List<(string FileName, byte[] Data)> files,
+        HashAlgorithmName hashAlgorithm,
+        out Dictionary<string, string> fileHashes)
     {
         var xmlUri = HashAlgorithmToXmlUri(hashAlgorithm);
+        var hashes = new Dictionary<string, string>(files.Count, StringComparer.Ordinal);
 
         var doc = new XDocument(
             new XDeclaration("1.0", "UTF-8", null),
@@ -936,6 +947,7 @@ public sealed class AsicService : IAsicService
                 files.Select(f =>
                 {
                     var hash = ComputeHash(f.Data, hashAlgorithm);
+                    hashes[f.FileName] = ToHexString(hash);
                     return new XElement(AsicNs + "DataObjectReference",
                         new XAttribute("URI", f.FileName),
                         new XAttribute("MimeType", GetMimeType(f.FileName)),
@@ -951,6 +963,7 @@ public sealed class AsicService : IAsicService
             doc.Save(writer);
         }
 
+        fileHashes = hashes;
         return ms.ToArray();
     }
 

@@ -968,6 +968,85 @@ public class AsicServiceTests
         return ms.ToArray();
     }
 
+    [Fact]
+    public async Task CreateExtendedAsync_ShouldReportEveryFileNameAndHash()
+    {
+        // Arrange
+        var one = Encoding.UTF8.GetBytes("File one");
+        var two = Encoding.UTF8.GetBytes("File two");
+        SetupMockTsa();
+
+        // Act
+        var result = await _service.CreateExtendedAsync([("one.txt", one), ("two.pdf", two)]);
+
+        // Assert — names in the order supplied ...
+        result.FileNames.Should().Equal("one.txt", "two.pdf");
+
+        // ... and a hex hash per file, matching a hash computed independently.
+        result.FileHashes.Should().NotBeNull();
+        result.FileHashes!.Keys.Should().BeEquivalentTo(["one.txt", "two.pdf"]);
+        result.FileHashes["one.txt"].Should().Be(Convert.ToHexString(SHA256.HashData(one)).ToLowerInvariant());
+        result.FileHashes["two.pdf"].Should().Be(Convert.ToHexString(SHA256.HashData(two)).ToLowerInvariant());
+
+        // DataHash stays the manifest hash for ASiC-E — not any file's hash.
+        result.FileHashes.Values.Should().NotContain(result.DataHash);
+    }
+
+    [Fact]
+    public async Task CreateExtendedAsync_FileHashesShouldMatchManifestDigests()
+    {
+        // Arrange — the reported hashes must be the very ones written to the manifest,
+        // or a caller recording them would record something the container does not claim.
+        SetupMockTsa();
+
+        // Act
+        var result = await _service.CreateExtendedAsync(
+            [("a.txt", Encoding.UTF8.GetBytes("AAA")), ("b.txt", Encoding.UTF8.GetBytes("BBB"))]);
+
+        // Assert
+        using var zip = new ZipArchive(new MemoryStream(result.ContainerBytes), ZipArchiveMode.Read);
+        var manifest = XDocument.Parse(new StreamReader(zip.GetEntry("META-INF/ASiCManifest.xml")!.Open()).ReadToEnd());
+        var ns = XNamespace.Get("http://uri.etsi.org/02918/v1.2.1#");
+
+        foreach (var dataRef in manifest.Root!.Elements(ns + "DataObjectReference"))
+        {
+            var uri = dataRef.Attribute("URI")!.Value;
+            var manifestDigest = Convert.FromBase64String(dataRef.Element(ns + "DigestValue")!.Value);
+            result.FileHashes![uri].Should().Be(Convert.ToHexString(manifestDigest).ToLowerInvariant());
+        }
+    }
+
+    [Fact]
+    public async Task CreateAsync_ShouldReportTheSingleFileNameAndHash()
+    {
+        // Arrange — ASiC-S populates both too, so callers need not branch on profile.
+        var data = Encoding.UTF8.GetBytes("payload");
+        SetupMockTsa();
+
+        // Act
+        var result = await _service.CreateAsync(data, "test.txt");
+
+        // Assert
+        result.FileNames.Should().Equal("test.txt");
+        result.FileHashes.Should().NotBeNull();
+        result.FileHashes!["test.txt"].Should().Be(result.DataHash);
+    }
+
+    [Fact]
+    public async Task RenewAsync_ShouldLeaveFileNamesAndHashesNull()
+    {
+        // Arrange — renewal adds a token and touches no data file, so it reports none.
+        SetupMockTsa();
+        var created = await _service.CreateAsync(Encoding.UTF8.GetBytes("payload"), "test.txt");
+
+        // Act
+        var renewed = await _service.RenewAsync(created.ContainerBytes);
+
+        // Assert
+        renewed.FileNames.Should().BeNull();
+        renewed.FileHashes.Should().BeNull();
+    }
+
     #endregion
 
     #region Stream and file-based creation
