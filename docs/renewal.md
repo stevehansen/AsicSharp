@@ -1,4 +1,4 @@
-﻿# Renewal
+# Renewal
 
 Extending a container's proof of existence by adding an archive timestamp over the newest token, before its algorithms or certificates weaken.
 

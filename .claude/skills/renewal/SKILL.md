@@ -1,4 +1,4 @@
-﻿---
+---
 name: renewal
 description: Prime on the AsicSharp Renewal domain before working on it — archive timestamps per ETSI EN 319 162-1 §5.4, RenewAsync, the timestamp chain and TimestampChainEntry, timestamp-NNN.tst naming, and byte-preserving in-place append. Use when the task touches renewing or re-stamping a container, chain ordering or chain-link validity, GetNextTimestampEntryName, AddTimestampToContainer, long-term archival, or the renew CLI command. Not for the first timestamp of a new container (see container and timestamping) or the general step model (see verification).
 ---
