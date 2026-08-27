@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using AsicSharp.Configuration;
@@ -171,6 +171,45 @@ public class IntegrationTests : IDisposable
         }
 
         return outputMs.ToArray();
+    }
+
+    [Fact]
+    public async Task AsicService_AsicE_UnreferencedZipEntry_IsReportedButDoesNotInvalidate()
+    {
+        var createResult = await _asicService.CreateExtendedAsync(
+            [("doc.txt", Encoding.UTF8.GetBytes("Covered by the manifest"))]);
+
+        // Smuggle in a data entry without touching the ASiCManifest.
+        byte[] tampered;
+        using (var ms = new MemoryStream())
+        {
+            ms.Write(createResult.ContainerBytes, 0, createResult.ContainerBytes.Length);
+            using (var zip = new System.IO.Compression.ZipArchive(
+                ms, System.IO.Compression.ZipArchiveMode.Update, leaveOpen: true))
+            {
+                var entry = zip.CreateEntry("injected.txt");
+                using var stream = entry.Open();
+                stream.Write(Encoding.UTF8.GetBytes("Never timestamped"));
+            }
+
+            tampered = ms.ToArray();
+        }
+
+        var result = _asicService.Verify(tampered);
+
+        // The referenced file's proof of existence is untouched, so the verdict stands.
+        result.IsValid.Should().BeTrue();
+        result.Error.Should().BeNull();
+
+        // The uncovered entry is still reported, both as a property and as a passing step.
+        result.UnreferencedFileNames.Should().BeEquivalentTo(["injected.txt"]);
+        var step = result.Steps.Single(s => s.Name == "Manifest completeness");
+        step.Passed.Should().BeTrue();
+        step.Detail.Should().Contain("injected.txt");
+
+        // Extraction hands back only what the manifest covers.
+        _asicService.ExtractAll(tampered).Select(e => e.FileName)
+            .Should().BeEquivalentTo(["doc.txt"]);
     }
 
     public void Dispose()

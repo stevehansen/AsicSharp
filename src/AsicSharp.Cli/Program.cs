@@ -1,4 +1,4 @@
-using System.CommandLine;
+﻿using System.CommandLine;
 using System.CommandLine.Invocation;
 using AsicSharp.Configuration;
 using AsicSharp.Extensions;
@@ -197,6 +197,15 @@ internal static class Program
 
                 if (result.SigningCertificate != null)
                     Console.WriteLine($"  Signed by:  {result.SigningCertificate.Subject}");
+
+                // A valid verdict covers only manifest-referenced files, so say so plainly
+                // rather than letting "VALID" imply the whole container was timestamped.
+                if (result.UnreferencedFileNames is { Count: > 0 } unreferenced)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine($"  ! Not covered by the timestamp: {string.Join(", ", unreferenced)}");
+                    Console.WriteLine($"    {unreferenced.Count} ZIP entr{(unreferenced.Count == 1 ? "y is" : "ies are")} not referenced by the ASiCManifest.");
+                }
 
                 ctx.ExitCode = 0;
             }

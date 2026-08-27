@@ -1,4 +1,4 @@
-# Ubiquitous Language
+﻿# Ubiquitous Language
 
 The agreed vocabulary for ASiC containers and RFC 3161 timestamping. Use these terms in code, XML doc comments, CLI output, and README prose.
 
@@ -13,6 +13,7 @@ The agreed vocabulary for ASiC containers and RFC 3161 timestamping. Use these t
 | **ASiCManifest**       | The XML document listing every data file with its hash, and the sole thing an ASiC-E timestamp covers              | manifest file, index, catalogue               |
 | **Manifest Reference** | One data file's entry in the ASiCManifest, carrying its name, MIME type and hash                                   | manifest entry, manifest row, data object     |
 | **ZIP Entry**          | A named byte stream physically stored in the container, whether data file or metadata                              | container entry, file, member                 |
+| **Unreferenced ZIP Entry** | A ZIP entry sitting where a data file would in an ASiC-E container but carrying no Manifest Reference, and so covered by no proof of existence | unlisted file, injected file, extra entry, orphan |
 
 ## Timestamping
 
@@ -57,6 +58,7 @@ The agreed vocabulary for ASiC containers and RFC 3161 timestamping. Use these t
 
 - An **ASiC-S** container holds exactly one **Data File**; an **ASiC-E** container holds one or more.
 - An **ASiC-E** container has exactly one **ASiCManifest**, holding exactly one **Manifest Reference** per **Data File**.
+- A well-formed **ASiC-E** container has no **Unreferenced ZIP Entry**; one that does still yields **Cryptographic Validity**, because the referenced files' proofs are unaffected — the uncovered names are reported separately for the caller to judge.
 - The **Original Timestamp** covers the **Data File** in ASiC-S, but the **ASiCManifest** in ASiC-E — never an ASiC-E data file directly.
 - A container holds exactly one **Original Timestamp** and zero or more **Archive Timestamps**; together they form a **Timestamp Chain** of two or more links.
 - Each **Archive Timestamp** covers the raw bytes of exactly one preceding **Timestamp Token**.
@@ -85,7 +87,7 @@ The agreed vocabulary for ASiC containers and RFC 3161 timestamping. Use these t
 ## Flagged ambiguities
 
 - **"timestamp"** collapsed three distinct things: the **Timestamp Instant** (a moment), the **Timestamp Token** (a signed artefact), and **Timestamping** (an act). Name the artefact a token whenever bytes are involved; reserve the bare word for prose where the distinction genuinely doesn't matter.
-- **"entry"** was used for a **ZIP Entry**, a **Manifest Reference**, and a **Chain Link** — three unrelated concepts. Note that `TimestampChainEntry.EntryName` is a *ZIP entry path*, so a single type mixes two of the three senses; don't add a third.
+- **"entry"** was used for a **ZIP Entry**, a **Manifest Reference**, and a **Chain Link** — three unrelated concepts. Note that `TimestampChainEntry.EntryName` is a *ZIP entry path*, so a single type mixes two of the three senses; don't add a third. **Unreferenced ZIP Entry** is a qualifier on the first sense, not a fourth concept — which is why `AsicVerifyResult.UnreferencedFileNames` says *file names* rather than *entries*, keeping it parallel to `FileNames`.
 - **"valid"** conflated **Cryptographic Validity** with trustworthiness. Verification never builds an `X509Chain`, so a self-issued TSA yields a fully "valid" container. Say "unaltered" or "cryptographically valid" in user-facing text, and keep the **Trust Decision** explicitly the caller's.
 - **"signature"** means both the TSA's signature *inside* a timestamp token and the optional **CAdES Signature** *beside* the data file. They answer different questions — *when* versus *who* — and only the second is optional. Never write bare "signature" without saying which.
 - **"certificate"** likewise splits into **TSA Certificate** and **Signing Certificate**; both are `X509Certificate2` and both appear on the same verification result, so an unqualified "cert" is always wrong.

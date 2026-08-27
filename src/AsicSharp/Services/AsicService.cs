@@ -1,4 +1,4 @@
-using System.IO.Compression;
+﻿using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Security.Cryptography.Pkcs;
 using System.Security.Cryptography.X509Certificates;
@@ -546,6 +546,13 @@ public sealed class AsicService : IAsicService
         using var zip = OpenZip(containerBytes);
         var dataEntries = FindDataEntries(zip);
 
+        // For ASiC-E, only manifest-referenced files carry a proof of existence. Returning
+        // an unreferenced ZIP entry would present bytes the timestamp never covered as
+        // though they had been timestamped, so drop them.
+        var referencedNames = ReadManifestReferencedNames(zip);
+        if (referencedNames != null)
+            dataEntries = dataEntries.Where(e => referencedNames.Contains(e.FullName)).ToList();
+
         if (dataEntries.Count == 0)
             throw new InvalidAsicContainerException("No data files found in container.");
 
@@ -1050,6 +1057,26 @@ public sealed class AsicService : IAsicService
             });
         }
 
+        // Step 4b: Report ZIP entries the manifest never referenced. Informational by
+        // design — the referenced files' proofs are untouched, so flipping the verdict
+        // here would invalidate containers that legitimately carry extra entries.
+        var referencedNames = new HashSet<string>(fileNames, StringComparer.Ordinal);
+        var unreferencedFileNames = FindDataEntries(zip)
+            .Select(e => e.FullName)
+            .Where(name => !referencedNames.Contains(name))
+            .ToList();
+
+        steps.Add(new VerificationStep
+        {
+            Name = "Manifest completeness",
+            Passed = true,
+            Detail = unreferencedFileNames.Count == 0
+                ? "Every data ZIP entry is referenced by the ASiCManifest"
+                : $"{unreferencedFileNames.Count} ZIP entr{(unreferencedFileNames.Count == 1 ? "y is" : "ies are")} " +
+                  $"not referenced by the ASiCManifest and therefore outside the proof of existence: " +
+                  string.Join(", ", unreferencedFileNames)
+        });
+
         // Step 5: Verify timestamp(s) cover the manifest — supports renewal chains
         var allTsEntries = GetTimestampEntriesInChainOrder(zip);
 
@@ -1179,6 +1206,7 @@ public sealed class AsicService : IAsicService
             Timestamp = timestamp,
             FileName = fileNames.FirstOrDefault(),
             FileNames = fileNames,
+            UnreferencedFileNames = unreferencedFileNames,
             TsaCertificate = tsaCert,
             SigningCertificate = signingCert,
             HashAlgorithm = hashAlgorithm ?? _options.HashAlgorithm.Name,
@@ -1195,6 +1223,36 @@ public sealed class AsicService : IAsicService
             !string.Equals(e.FullName, AsicConstants.MimeTypeEntryName, StringComparison.OrdinalIgnoreCase) &&
             !e.FullName.StartsWith(AsicConstants.MetaInfDir + "/", StringComparison.OrdinalIgnoreCase) &&
             !e.FullName.StartsWith(AsicConstants.MetaInfDir + "\\", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// The ZIP entry names the ASiCManifest references, or <c>null</c> when the container
+    /// has no readable manifest — i.e. when it is ASiC-S and completeness does not apply.
+    /// </summary>
+    private static HashSet<string>? ReadManifestReferencedNames(ZipArchive zip)
+    {
+        var manifestEntry = zip.GetEntry(AsicConstants.AsicManifestEntryPath);
+        if (manifestEntry == null)
+            return null;
+
+        XDocument manifestDoc;
+        try
+        {
+            manifestDoc = XDocument.Parse(Encoding.UTF8.GetString(ReadEntryBytes(manifestEntry)));
+        }
+        catch (Exception)
+        {
+            // An unreadable manifest is Verify's problem to report; extraction falls back
+            // to every data entry rather than silently returning nothing.
+            return null;
+        }
+
+        return new HashSet<string>(
+            manifestDoc.Root!
+                .Elements(AsicNs + "DataObjectReference")
+                .Select(r => r.Attribute("URI")?.Value)
+                .Where(uri => uri != null)!,
+            StringComparer.Ordinal);
     }
 
     private static List<ZipArchiveEntry> FindDataEntries(ZipArchive zip)

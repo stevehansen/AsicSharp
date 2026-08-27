@@ -1,4 +1,4 @@
----
+﻿---
 name: container
 description: Prime on the AsicSharp Container domain before working on it — the ETSI ZIP layout, ASiC-S vs ASiC-E, the mimetype and META-INF entries, ASiCManifest construction, extraction, and GetContainerType format probing. Use when the task touches container structure, BuildContainer/BuildExtendedContainer/BuildAsicManifest, Extract/ExtractAll, entry names, MaxFileSize, Zip Slip, the CAdES signature entry, or the stamp/extract CLI commands. Not for the TSA request itself (see timestamping), the pass/fail verdict (see verification), or archive timestamps (see renewal).
 ---
@@ -29,7 +29,7 @@ The container as a *structure*: ETSI ZIP layout, the two profiles, manifest cons
 ## Gotchas
 
 - **`Extract` on ASiC-E returns only the first data file** (asserted, intended). Use `ExtractAll` when the profile is unknown.
-- **`ExtractAll` walks ZIP entries, not the manifest** — it returns files the manifest never listed and the proof never covered. Pairs badly with verification's missing completeness check.
+- **`ExtractAll` filters ASiC-E through the manifest** — only referenced files come back, so it cannot hand out uncovered bytes. Falls back to every data entry when the manifest is unparseable; ASiC-S is unfiltered (no manifest). See `UnreferencedFileNames` on the verify side.
 - **Nothing enforces one data file for ASiC-S on read.**
 - **`.asics`/`.asice` is a CLI default only** — no code reads the extension; detection is mimetype-then-manifest, and manifest presence wins.
 - **`AsicCreateResult.DataHash` is the data's hash for ASiC-S but the manifest's for ASiC-E.**

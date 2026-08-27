@@ -1,4 +1,4 @@
-using System.IO.Compression;
+﻿using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Linq;
@@ -790,6 +790,104 @@ public class AsicServiceTests
         extracted[0].Data.Should().BeEquivalentTo(file1Data);
         extracted[1].Data.Should().BeEquivalentTo(file2Data);
         extracted[2].Data.Should().BeEquivalentTo(file3Data);
+    }
+
+    [Fact]
+    public async Task Verify_AsicE_WithUnreferencedZipEntry_ShouldReportItWithoutFailing()
+    {
+        // Arrange — a complete ASiC-E container, then an extra ZIP entry smuggled
+        // in without touching the ASiCManifest.
+        SetupMockTsa();
+        var createResult = await _service.CreateExtendedAsync(
+            [("doc.txt", Encoding.UTF8.GetBytes("Hello"))]);
+        var tampered = AddZipEntry(createResult.ContainerBytes, "injected.txt", "not covered");
+
+        // Act
+        var clean = _service.Verify(createResult.ContainerBytes);
+        var result = _service.Verify(tampered);
+
+        // Assert — the injected entry adds no failing step, so it cannot flip the verdict.
+        // (These unit tests feed a non-DER placeholder token, so the token steps fail either
+        // way; IsValid staying true against a real token is covered in the integration set.)
+        FailedStepNames(result).Should().BeEquivalentTo(FailedStepNames(clean));
+        result.FileNames.Should().BeEquivalentTo(["doc.txt"]);
+
+        // The uncovered entry is reported, and surfaced as a step.
+        result.UnreferencedFileNames.Should().BeEquivalentTo(["injected.txt"]);
+
+        var step = result.Steps.FirstOrDefault(s => s.Name == "Manifest completeness");
+        step.Should().NotBeNull();
+        step!.Passed.Should().BeTrue();
+        step.Detail.Should().Contain("injected.txt");
+    }
+
+    [Fact]
+    public async Task Verify_AsicE_WhenEveryEntryIsReferenced_ShouldReportNoUnreferencedFileNames()
+    {
+        // Arrange
+        SetupMockTsa();
+        var createResult = await _service.CreateExtendedAsync(
+            [("one.txt", Encoding.UTF8.GetBytes("1")), ("two.txt", Encoding.UTF8.GetBytes("2"))]);
+
+        // Act
+        var result = _service.Verify(createResult.ContainerBytes);
+
+        // Assert — empty, not null: the check ran and found nothing uncovered.
+        result.UnreferencedFileNames.Should().NotBeNull();
+        result.UnreferencedFileNames.Should().BeEmpty();
+
+        var step = result.Steps.FirstOrDefault(s => s.Name == "Manifest completeness");
+        step.Should().NotBeNull();
+        step!.Passed.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Verify_AsicS_ShouldLeaveUnreferencedFileNamesNull()
+    {
+        // Arrange — ASiC-S has no manifest, so completeness does not apply.
+        SetupMockTsa();
+        var createResult = await _service.CreateAsync(Encoding.UTF8.GetBytes("data"), "test.txt");
+
+        // Act
+        var result = _service.Verify(createResult.ContainerBytes);
+
+        // Assert
+        result.UnreferencedFileNames.Should().BeNull();
+        result.Steps.Should().NotContain(s => s.Name == "Manifest completeness");
+    }
+
+    [Fact]
+    public async Task ExtractAll_AsicE_ShouldOmitUnreferencedZipEntries()
+    {
+        // Arrange
+        SetupMockTsa();
+        var createResult = await _service.CreateExtendedAsync(
+            [("doc.txt", Encoding.UTF8.GetBytes("Hello"))]);
+        var tampered = AddZipEntry(createResult.ContainerBytes, "injected.txt", "not covered");
+
+        // Act
+        var extracted = _service.ExtractAll(tampered);
+
+        // Assert — only what the ASiCManifest covers comes back.
+        extracted.Select(e => e.FileName).Should().BeEquivalentTo(["doc.txt"]);
+    }
+
+    private static IEnumerable<string> FailedStepNames(AsicVerifyResult result)
+        => result.Steps.Where(s => !s.Passed).Select(s => s.Name);
+
+    /// <summary>Appends a data ZIP entry to a container without updating the ASiCManifest.</summary>
+    private static byte[] AddZipEntry(byte[] containerBytes, string entryName, string content)
+    {
+        using var ms = new MemoryStream();
+        ms.Write(containerBytes, 0, containerBytes.Length);
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Update, leaveOpen: true))
+        {
+            var entry = zip.CreateEntry(entryName, CompressionLevel.Optimal);
+            using var stream = entry.Open();
+            stream.Write(Encoding.UTF8.GetBytes(content));
+        }
+
+        return ms.ToArray();
     }
 
     #endregion

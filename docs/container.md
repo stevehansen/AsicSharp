@@ -1,4 +1,4 @@
-# Container
+﻿# Container
 
 The ASiC container itself — what a conformant ZIP looks like, how ASiC-S and ASiC-E differ, and how files get in and out of one.
 
@@ -55,7 +55,7 @@ Entry names, MIME types and the ETSI namespace are all in [`src/AsicSharp/Servic
 ## Gotchas
 
 - **`Extract` on an ASiC-E container silently returns only the first data file.** `FindDataEntry` takes the first non-metadata entry in ZIP order. Asserted by `Extract_OnAsicEContainer_ShouldReturnFirstDataFile` — it's intended, not a bug, but it's a trap. Use `ExtractAll` for anything that might be ASiC-E.
-- **`ExtractAll` walks ZIP entries, not the manifest.** It returns data files the manifest never listed — and since verification only walks manifest references, such a file is never covered by the proof of existence and never reported as a problem. A caller that verifies, sees `IsValid`, then `ExtractAll`s can hand out unstamped bytes as though they were timestamped. Open — [`STRIDE.md`](../STRIDE.md) T-9, [#25](https://github.com/stevehansen/AsicSharp/issues/25); also see [`verification.md`](verification.md).
+- **`ExtractAll` filters ASiC-E through the manifest, but ASiC-S through the ZIP.** For ASiC-E it returns only files the ASiCManifest references, so it can no longer hand out bytes the proof of existence never covered; the unreferenced names surface on `AsicVerifyResult.UnreferencedFileNames` instead. A container whose manifest is unparseable falls back to every data entry — an unreadable manifest is `Verify`'s problem to report, and returning nothing would be worse. ASiC-S has no manifest, so nothing is filtered there. Partially mitigated — [`STRIDE.md`](../STRIDE.md) T-9, [#25](https://github.com/stevehansen/AsicSharp/issues/25); also see [`verification.md`](verification.md).
 - **Nothing enforces "exactly one data file" for ASiC-S on read.** A ZIP with three data files and an `asic-s` mimetype verifies against whichever one comes first.
 - **The `.asics` / `.asice` extension is a CLI default only.** No code reads it; format detection is mimetype-then-manifest. Don't infer the profile from a path.
 - **A manifest present with no `mimetype` at all reports `Extended`** (asserted). Manifest presence outranks a missing or wrong mimetype — for both `GetContainerType` and `Verify`'s routing.
@@ -71,6 +71,6 @@ Entry names, MIME types and the ETSI namespace are all in [`src/AsicSharp/Servic
 ## Links
 
 - Glossary: [`UBIQUITOUS_LANGUAGE.md`](../UBIQUITOUS_LANGUAGE.md) § Container and contents, § Signing (optional)
-- Threat model: [`STRIDE.md`](../STRIDE.md) — T-1/E-1 (Zip Slip), T-5 (XXE), T-6 (manifest digest), T-9 (ASiC-E completeness, open), unbounded metadata entries
+- Threat model: [`STRIDE.md`](../STRIDE.md) — T-1/E-1 (Zip Slip), T-5 (XXE), T-6 (manifest digest), T-9 (ASiC-E completeness, partially mitigated), unbounded metadata entries
 - Related domains: [`timestamping.md`](timestamping.md) (boundary: this domain stores the token, that one obtains it) · [`verification.md`](verification.md) (boundary: this domain defines the layout, that one judges it) · [`renewal.md`](renewal.md) (boundary: renewal adds `.tst` entries without rebuilding the ZIP)
 - Priming skill: [`.claude/skills/container/SKILL.md`](../.claude/skills/container/SKILL.md)
