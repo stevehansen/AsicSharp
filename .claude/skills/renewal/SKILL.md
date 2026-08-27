@@ -28,7 +28,7 @@ Adding an archive timestamp over the newest token so a proof survives algorithm 
 ## Gotchas
 
 - **`asicts renew` overwrites the input file in place** — no backup, no `--output`.
-- **A renewal's `AsicCreateResult.DataHash` is the previous *token's* hash**, not the data's (CLI labels it "Token hash").
+- **A renewal's `AsicCreateResult.DataHash` is the previous *token's* hash**, not the data's (CLI labels it "Token hash"); `FileNames`/`FileHashes` are null — renewal touches no data file.
 - **Containers grow one entry per renewal, unbounded** (D-4 in `STRIDE.md`).
 - **`Verify_RenewedContainer_TimestampChainShouldBePopulated` is not an ordering test** — it asserts `Order`, which is assigned by loop position and so holds for any ordering. Assert `EntryName` instead.
 - **Real chain cryptography lives in one integration test** (`AsicService_RenewTwice_…`), and CI lets that job fail. Run it deliberately after touching chain code.
