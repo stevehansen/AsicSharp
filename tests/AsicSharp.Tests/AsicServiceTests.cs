@@ -872,6 +872,84 @@ public class AsicServiceTests
         extracted.Select(e => e.FileName).Should().BeEquivalentTo(["doc.txt"]);
     }
 
+    [Fact]
+    public async Task Extract_AsicE_ShouldReturnAManifestReferencedFile_NotWhicheverIsFirstInTheZip()
+    {
+        // Arrange — Extract takes the first data entry in ZIP order, and whoever rebuilt the
+        // ZIP chose that order. Put an unreferenced entry ahead of the real one.
+        SetupMockTsa();
+        var createResult = await _service.CreateExtendedAsync(
+            [("doc.txt", Encoding.UTF8.GetBytes("Covered"))]);
+        var tampered = InsertDataEntryFirst(createResult.ContainerBytes, "injected.txt", "Never timestamped");
+
+        // Act
+        var (fileName, data) = _service.Extract(tampered);
+
+        // Assert — the covered file, not the one the attacker placed first.
+        fileName.Should().Be("doc.txt");
+        Encoding.UTF8.GetString(data).Should().Be("Covered");
+    }
+
+    [Fact]
+    public void ExtractAll_AsicE_WithUnparseableManifest_ShouldReturnEveryDataEntry()
+    {
+        // Arrange — a manifest that is not XML at all.
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            AddEntry(zip, "mimetype", "application/vnd.etsi.asic-e+zip");
+            AddEntry(zip, "a.txt", "AAA");
+            AddEntry(zip, "b.txt", "BBB");
+            AddEntry(zip, "META-INF/ASiCManifest.xml", "this is not xml");
+            AddEntry(zip, "META-INF/timestamp.tst", "FAKE_TOKEN");
+        }
+
+        var containerBytes = ms.ToArray();
+
+        // Act + Assert — extraction falls back to every data entry rather than returning
+        // nothing, which is safe only because Verify rejects the container outright. Both
+        // halves are asserted together so the coupling cannot be broken silently.
+        _service.ExtractAll(containerBytes).Select(e => e.FileName)
+            .Should().BeEquivalentTo(["a.txt", "b.txt"]);
+
+        var verifyResult = _service.Verify(containerBytes);
+        verifyResult.IsValid.Should().BeFalse();
+        verifyResult.Error.Should().Contain("ASiCManifest");
+    }
+
+    private static void AddEntry(ZipArchive zip, string name, string content)
+    {
+        var entry = zip.CreateEntry(name, CompressionLevel.Optimal);
+        using var stream = entry.Open();
+        stream.Write(Encoding.UTF8.GetBytes(content));
+    }
+
+    /// <summary>
+    /// Rebuilds a container with an extra data entry placed ahead of every existing one,
+    /// so ZIP order no longer agrees with the ASiCManifest.
+    /// </summary>
+    private static byte[] InsertDataEntryFirst(byte[] containerBytes, string entryName, string content)
+    {
+        using var source = new ZipArchive(new MemoryStream(containerBytes), ZipArchiveMode.Read);
+        using var ms = new MemoryStream();
+        using (var target = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var mimetype = source.GetEntry("mimetype")!;
+            AddEntry(target, "mimetype", new StreamReader(mimetype.Open()).ReadToEnd());
+            AddEntry(target, entryName, content);
+
+            foreach (var entry in source.Entries.Where(e => e.FullName != "mimetype"))
+            {
+                var copy = target.CreateEntry(entry.FullName, CompressionLevel.Optimal);
+                using var from = entry.Open();
+                using var to = copy.Open();
+                from.CopyTo(to);
+            }
+        }
+
+        return ms.ToArray();
+    }
+
     private static IEnumerable<string> FailedStepNames(AsicVerifyResult result)
         => result.Steps.Where(s => !s.Passed).Select(s => s.Name);
 
@@ -1480,7 +1558,7 @@ public class AsicServiceTests
         SetupMockTsa();
         var result = await _service.CreateExtendedAsync(files);
 
-        // Act — Extract returns only the first data file for ASiC-E
+        // Act — Extract returns only the first manifest-referenced data file for ASiC-E
         var (fileName, data) = _service.Extract(result.ContainerBytes);
 
         // Assert

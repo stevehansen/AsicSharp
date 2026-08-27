@@ -448,7 +448,7 @@ public sealed class AsicService : IAsicService
     public (string FileName, byte[] Data) Extract(byte[] containerBytes)
     {
         using var zip = OpenZip(containerBytes);
-        var dataEntry = FindDataEntry(zip)
+        var dataEntry = FindCoveredDataEntries(zip).FirstOrDefault()
             ?? throw new InvalidAsicContainerException("No data file found in container.");
 
         // Sanitize entry name to prevent path traversal (Zip Slip)
@@ -548,14 +548,7 @@ public sealed class AsicService : IAsicService
     public IReadOnlyList<(string FileName, byte[] Data)> ExtractAll(byte[] containerBytes)
     {
         using var zip = OpenZip(containerBytes);
-        var dataEntries = FindDataEntries(zip);
-
-        // For ASiC-E, only manifest-referenced files carry a proof of existence. Returning
-        // an unreferenced ZIP entry would present bytes the timestamp never covered as
-        // though they had been timestamped, so drop them.
-        var referencedNames = ReadManifestReferencedNames(zip);
-        if (referencedNames != null)
-            dataEntries = dataEntries.Where(e => referencedNames.Contains(e.FullName)).ToList();
+        var dataEntries = FindCoveredDataEntries(zip);
 
         if (dataEntries.Count == 0)
             throw new InvalidAsicContainerException("No data files found in container.");
@@ -1236,6 +1229,22 @@ public sealed class AsicService : IAsicService
             !string.Equals(e.FullName, AsicConstants.MimeTypeEntryName, StringComparison.OrdinalIgnoreCase) &&
             !e.FullName.StartsWith(AsicConstants.MetaInfDir + "/", StringComparison.OrdinalIgnoreCase) &&
             !e.FullName.StartsWith(AsicConstants.MetaInfDir + "\\", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// The data ZIP entries a proof of existence actually covers: for ASiC-E only those the
+    /// ASiCManifest references, for ASiC-S every data entry. Handing back an unreferenced
+    /// entry would present bytes the timestamp never covered as though they had been
+    /// timestamped, which is the whole hazard both extract APIs have to avoid.
+    /// </summary>
+    private static List<ZipArchiveEntry> FindCoveredDataEntries(ZipArchive zip)
+    {
+        var dataEntries = FindDataEntries(zip);
+        var referencedNames = ReadManifestReferencedNames(zip);
+
+        return referencedNames == null
+            ? dataEntries
+            : dataEntries.Where(e => referencedNames.Contains(e.FullName)).ToList();
     }
 
     /// <summary>
