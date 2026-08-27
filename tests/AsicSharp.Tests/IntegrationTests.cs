@@ -1,4 +1,4 @@
-﻿using System.Net.Http;
+using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using AsicSharp.Configuration;

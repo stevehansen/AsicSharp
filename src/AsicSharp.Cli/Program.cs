@@ -1,4 +1,4 @@
-﻿using System.CommandLine;
+using System.CommandLine;
 using System.CommandLine.Invocation;
 using AsicSharp.Configuration;
 using AsicSharp.Extensions;

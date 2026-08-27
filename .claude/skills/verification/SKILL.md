@@ -1,4 +1,4 @@
-﻿---
+---
 name: verification
 description: Prime on the AsicSharp Verification domain before working on it — the non-throwing step model, Verify/VerifyExtended, VerificationStep, AsicVerifyResult, per-file manifest digest checks, the CAdES signature check, and the deliberate exclusion of any trust decision. Use when the task touches verifying a container, adding or renaming a verification step, IsValid or Error semantics, hash-algorithm OID mapping, or the verify CLI command. Not for building containers (see container), the TSA request (see timestamping), or the archive-timestamp chain's shape (see renewal).
 ---
