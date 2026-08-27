@@ -52,6 +52,14 @@ Entry names, MIME types and the ETSI namespace are all in [`src/AsicSharp/Servic
 | [`src/AsicSharp/Configuration/AsicTimestampOptions.cs`](../src/AsicSharp/Configuration/AsicTimestampOptions.cs) | `MaxFileSize`, `SigningCertificate`, `HashAlgorithm` |
 | [`src/AsicSharp.Cli/Program.cs`](../src/AsicSharp.Cli/Program.cs) | `stamp` picks the profile purely from argument count; `extract` writes into a directory |
 
+## Streaming paths
+
+`CreateToStreamAsync(data, fileName, output)` and `ExtractToStreamAsync(container, output)` build and unpack an ASiC-S container without materialising either the payload or the container: the payload is hashed in chunks, then copied straight into the ZIP entry. A `CountingStream` wrapper reports `BytesWritten` so the caller learns the container's size without the output needing to seek. `AsicStreamCreateResult` is `AsicCreateResult` minus `ContainerBytes` — there are no container bytes to return, which is the point.
+
+Both refuse a **non-seekable** stream. Create needs to read the payload twice (hash pass, then copy pass) because the TSA must see the hash before the first byte is written; read needs seek because `ZipArchive` does not fail on a forward-only stream, it silently buffers the whole thing. Refusing is the honest option — the `byte[]` overloads are the documented fallback.
+
+ASiC-E creation and renewal stay `byte[]`-only, and the three `byte[]`/file overloads are unchanged.
+
 ## Gotchas
 
 - **`Extract` on an ASiC-E container silently returns only the first *manifest-referenced* data file.** It takes the first entry `FindCoveredDataEntries` yields, in ZIP order. Asserted by `Extract_OnAsicEContainer_ShouldReturnFirstDataFile` — it's intended, not a bug, but it's a trap. Use `ExtractAll` for anything that might be ASiC-E. The manifest filter matters because ZIP order is chosen by whoever wrote the ZIP: before it existed, an entry placed ahead of the real one made `Extract` hand back uncovered bytes, which `Extract_AsicE_ShouldReturnAManifestReferencedFile_NotWhicheverIsFirstInTheZip` now pins.
@@ -60,6 +68,8 @@ Entry names, MIME types and the ETSI namespace are all in [`src/AsicSharp/Servic
 - **The `.asics` / `.asice` extension is a CLI default only.** No code reads it; format detection is mimetype-then-manifest. Don't infer the profile from a path.
 - **A manifest present with no `mimetype` at all reports `Extended`** (asserted). Manifest presence outranks a missing or wrong mimetype — for both `GetContainerType` and `Verify`'s routing.
 - **ASiC-E data files are stored under their raw name and read back under the raw manifest URI.** `AsicVerifyResult.FileNames` is unsanitized manifest text on the ASiC-E path, while the ASiC-S path passes it through `Path.GetFileName`. Sanitize before you touch the filesystem — the CLI's `extract` goes through `ExtractAll`, which does; a caller reading `FileNames` directly gets no such help.
+- **`CreateToStreamAsync` refuses a configured `SigningCertificate`** with `NotSupportedException`. A CAdES signature is a `ContentInfo` over the whole payload and has no streaming form, so honouring the option would buffer exactly the bytes this overload exists not to buffer. The `byte[]` path still signs.
+- **The three container builders must not drift.** `BuildContainer`, `BuildExtendedContainer` and `CreateToStreamAsync` all write entries through `WriteMimeTypeEntry` / `WriteBytesEntry` / `WriteTextEntry`, so entry names, order and compression levels live in one place. `CreateToStreamAsync_ShouldWriteTheSameContainerAsTheBufferingOverload` compares the two ASiC-S containers entry by entry.
 - **`AsicCreateResult.DataHash` means different things per profile:** the data file's hash for ASiC-S, the *manifest's* hash for ASiC-E. Same property, different subject ([#9](https://github.com/stevehansen/AsicSharp/issues/9) tracks the related `FileNames` gap).
 
 ## Executable references

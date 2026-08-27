@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Xml.Linq;
 using AsicSharp;
@@ -966,6 +967,270 @@ public class AsicServiceTests
         }
 
         return ms.ToArray();
+    }
+
+    #endregion
+
+    #region Stream overloads
+
+    [Fact]
+    public async Task CreateToStreamAsync_ShouldWriteTheSameContainerAsTheBufferingOverload()
+    {
+        // Arrange — the streaming path must produce a real ASiC-S container, not a near-miss.
+        var payload = Encoding.UTF8.GetBytes("Streamed payload");
+        SetupMockTsa();
+
+        // Act
+        using var output = new MemoryStream();
+        var streamResult = await _service.CreateToStreamAsync(
+            new MemoryStream(payload), "test.txt", output);
+        var bufferedResult = await _service.CreateAsync(payload, "test.txt");
+
+        // Assert — same entries, in the same order, with the same content.
+        using var streamed = new ZipArchive(new MemoryStream(output.ToArray()), ZipArchiveMode.Read);
+        using var buffered = new ZipArchive(new MemoryStream(bufferedResult.ContainerBytes), ZipArchiveMode.Read);
+
+        streamed.Entries.Select(e => e.FullName)
+            .Should().Equal(buffered.Entries.Select(e => e.FullName));
+
+        foreach (var entry in buffered.Entries)
+        {
+            var counterpart = streamed.GetEntry(entry.FullName);
+            counterpart.Should().NotBeNull($"'{entry.FullName}' should exist in the streamed container");
+            ReadAll(counterpart!).Should().BeEquivalentTo(ReadAll(entry), $"content of '{entry.FullName}'");
+        }
+
+        // The reported metadata agrees with the buffering path too.
+        streamResult.DataHash.Should().Be(bufferedResult.DataHash);
+        streamResult.HashAlgorithm.Should().Be(bufferedResult.HashAlgorithm);
+        streamResult.FileNames.Should().Equal("test.txt");
+        streamResult.FileHashes!["test.txt"].Should().Be(streamResult.DataHash);
+        streamResult.BytesWritten.Should().Be(output.Length);
+    }
+
+    [Fact]
+    public async Task CreateToStreamAsync_ShouldProduceAContainerThatVerifies()
+    {
+        // Arrange
+        SetupMockTsa();
+
+        // Act
+        using var output = new MemoryStream();
+        await _service.CreateToStreamAsync(
+            new MemoryStream(Encoding.UTF8.GetBytes("Round trip")), "doc.txt", output);
+
+        // Assert — the structural steps pass; token steps need a real token (integration).
+        var result = _service.Verify(output.ToArray());
+        result.Steps.Should().Contain(s => s.Name == "MIME type" && s.Passed);
+        result.Steps.Should().Contain(s => s.Name == "Data file" && s.Passed);
+        result.FileName.Should().Be("doc.txt");
+    }
+
+    [Fact]
+    public async Task CreateToStreamAsync_WithNonSeekableData_ShouldThrow()
+    {
+        // Arrange — the hash must reach the TSA before any byte is written, so the input is
+        // read twice; a forward-only stream cannot serve that and must be rejected loudly.
+        SetupMockTsa();
+        using var forwardOnly = new ForwardOnlyStream(Encoding.UTF8.GetBytes("payload"));
+
+        // Act
+        var act = () => _service.CreateToStreamAsync(forwardOnly, "test.txt", new MemoryStream());
+
+        // Assert
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .WithMessage("*seekable*");
+    }
+
+    [Fact]
+    public async Task CreateToStreamAsync_WithSigningCertificate_ShouldThrowNotSupported()
+    {
+        // Arrange — a CAdES signature needs the whole payload in memory, which is precisely
+        // what this overload promises not to do. Refuse rather than silently buffer.
+        using var certificate = SelfSignedCertificate();
+        var options = new AsicTimestampOptions { SigningCertificate = certificate };
+        var service = new AsicService(_mockTsa, options);
+        SetupMockTsa();
+
+        // Act
+        var act = () => service.CreateToStreamAsync(
+            new MemoryStream(Encoding.UTF8.GetBytes("payload")), "test.txt", new MemoryStream());
+
+        // Assert
+        await act.Should().ThrowAsync<NotSupportedException>();
+    }
+
+    [Fact]
+    public async Task CreateToStreamAsync_ExceedingMaxFileSize_ShouldThrow()
+    {
+        // Arrange
+        var options = new AsicTimestampOptions { MaxFileSize = 8 };
+        var service = new AsicService(_mockTsa, options);
+        SetupMockTsa();
+
+        // Act
+        var act = () => service.CreateToStreamAsync(
+            new MemoryStream(new byte[64]), "big.bin", new MemoryStream());
+
+        // Assert — enforced from the stream's length, before a single byte is written.
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Verify_StreamOverload_ShouldMatchTheByteArrayOverload()
+    {
+        // Arrange
+        SetupMockTsa();
+        var created = await _service.CreateExtendedAsync(
+            [("one.txt", Encoding.UTF8.GetBytes("1")), ("two.txt", Encoding.UTF8.GetBytes("2"))]);
+
+        // Act
+        var fromBytes = _service.Verify(created.ContainerBytes);
+        var fromStream = _service.Verify(new MemoryStream(created.ContainerBytes));
+
+        // Assert — step for step, the same verdict.
+        fromStream.Steps.Select(s => (s.Name, s.Passed, s.Detail))
+            .Should().Equal(fromBytes.Steps.Select(s => (s.Name, s.Passed, s.Detail)));
+        fromStream.IsValid.Should().Be(fromBytes.IsValid);
+        fromStream.DataHash.Should().Be(fromBytes.DataHash);
+        fromStream.FileNames.Should().Equal(fromBytes.FileNames!);
+    }
+
+    [Fact]
+    public void Verify_StreamOverload_WithNonSeekableStream_ShouldThrow()
+    {
+        // Arrange — ZipArchive would silently buffer it all, so refuse instead of pretending.
+        using var forwardOnly = new ForwardOnlyStream(new byte[32]);
+
+        // Act
+        var act = () => _service.Verify(forwardOnly);
+
+        // Assert
+        act.Should().Throw<ArgumentException>().WithMessage("*seekable*");
+    }
+
+    [Fact]
+    public async Task ExtractToStreamAsync_ShouldWriteTheDataFileAndReturnItsName()
+    {
+        // Arrange
+        var payload = Encoding.UTF8.GetBytes("Extract me");
+        SetupMockTsa();
+        var created = await _service.CreateAsync(payload, "doc.txt");
+
+        // Act
+        using var output = new MemoryStream();
+        var fileName = await _service.ExtractToStreamAsync(
+            new MemoryStream(created.ContainerBytes), output);
+
+        // Assert
+        fileName.Should().Be("doc.txt");
+        output.ToArray().Should().BeEquivalentTo(payload);
+    }
+
+    [Fact]
+    public async Task ExtractToStreamAsync_AsicE_ShouldSkipUnreferencedZipEntries()
+    {
+        // Arrange — same coverage rule as Extract: ZIP order must not decide what comes out.
+        SetupMockTsa();
+        var created = await _service.CreateExtendedAsync(
+            [("doc.txt", Encoding.UTF8.GetBytes("Covered"))]);
+        var tampered = InsertDataEntryFirst(created.ContainerBytes, "injected.txt", "Never timestamped");
+
+        // Act
+        using var output = new MemoryStream();
+        var fileName = await _service.ExtractToStreamAsync(new MemoryStream(tampered), output);
+
+        // Assert
+        fileName.Should().Be("doc.txt");
+        Encoding.UTF8.GetString(output.ToArray()).Should().Be("Covered");
+    }
+
+    [Fact]
+    public async Task CreateToStreamAsync_ShouldNotAllocateTheWholePayload()
+    {
+        // This is the whole point of the overload, so assert it rather than trusting it: a
+        // 64 MB payload must not produce anything like 64 MB of allocation. The byte[] path
+        // allocates the payload at least twice over (input array plus container array).
+        const int payloadSize = 64 * 1024 * 1024;
+        var options = new AsicTimestampOptions { MaxFileSize = null };
+        var service = new AsicService(_mockTsa, options);
+        SetupMockTsa();
+
+        var payloadPath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".bin");
+
+        try
+        {
+            using (var file = File.Create(payloadPath))
+            {
+                var chunk = new byte[64 * 1024];
+                for (var written = 0; written < payloadSize; written += chunk.Length)
+                    file.Write(chunk, 0, chunk.Length);
+            }
+
+            using var input = File.OpenRead(payloadPath);
+            using var output = new MemoryStream();
+
+            var before = GC.GetTotalAllocatedBytes(precise: true);
+            await service.CreateToStreamAsync(input, "big.bin", output);
+            var allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
+
+            // Generous ceiling — the point is the order of magnitude, not a tight budget.
+            allocated.Should().BeLessThan(payloadSize / 8,
+                "the payload should be hashed and copied in chunks, never materialised");
+        }
+        finally
+        {
+            if (File.Exists(payloadPath))
+                File.Delete(payloadPath);
+        }
+    }
+
+    private static X509Certificate2 SelfSignedCertificate()
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest(
+            "CN=AsicSharp Test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+    }
+
+    private static byte[] ReadAll(ZipArchiveEntry entry)
+    {
+        using var stream = entry.Open();
+        using var ms = new MemoryStream();
+        stream.CopyTo(ms);
+        return ms.ToArray();
+    }
+
+    /// <summary>A readable stream that cannot seek, like a network or pipe stream.</summary>
+    private sealed class ForwardOnlyStream : Stream
+    {
+        private readonly MemoryStream _inner;
+
+        public ForwardOnlyStream(byte[] data) => _inner = new MemoryStream(data);
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => _inner.Position;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                _inner.Dispose();
+            base.Dispose(disposing);
+        }
     }
 
     #endregion

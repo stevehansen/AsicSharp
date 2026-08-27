@@ -212,6 +212,52 @@ public class IntegrationTests : IDisposable
             .Should().BeEquivalentTo(["doc.txt"]);
     }
 
+    [Fact]
+    public async Task AsicService_StreamRoundTrip_CreateVerifyAndExtractWithoutBufferingTheContainer()
+    {
+        var payload = Encoding.UTF8.GetBytes("Streamed all the way to DigiCert and back.");
+        var containerPath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".asics");
+
+        try
+        {
+            // Create straight to a file stream — the container never exists as a byte[].
+            AsicStreamCreateResult createResult;
+            using (var input = new MemoryStream(payload))
+            using (var output = File.Create(containerPath))
+            {
+                createResult = await _asicService.CreateToStreamAsync(input, "doc.txt", output);
+            }
+
+            createResult.BytesWritten.Should().Be(new FileInfo(containerPath).Length);
+            createResult.Timestamp.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5));
+            createResult.FileHashes!["doc.txt"].Should().Be(createResult.DataHash);
+
+            // Verify from the file stream — this is the assertion that the streamed container
+            // is a genuine ASiC-S container whose real token signature and hash linkage check out.
+            using (var container = File.OpenRead(containerPath))
+            {
+                var verifyResult = _asicService.Verify(container);
+                verifyResult.IsValid.Should().BeTrue(verifyResult.Error);
+                verifyResult.Timestamp.Should().Be(createResult.Timestamp);
+                verifyResult.DataHash.Should().Be(createResult.DataHash);
+            }
+
+            // Extract back out through streams.
+            using (var container = File.OpenRead(containerPath))
+            using (var extracted = new MemoryStream())
+            {
+                var fileName = await _asicService.ExtractToStreamAsync(container, extracted);
+                fileName.Should().Be("doc.txt");
+                extracted.ToArray().Should().BeEquivalentTo(payload);
+            }
+        }
+        finally
+        {
+            if (File.Exists(containerPath))
+                File.Delete(containerPath);
+        }
+    }
+
     public void Dispose()
     {
         _httpClient.Dispose();

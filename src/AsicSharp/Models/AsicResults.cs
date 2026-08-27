@@ -24,6 +24,41 @@ public sealed class AsicCreateResult
 }
 
 /// <summary>
+/// Result of writing an ASiC container straight to a caller-supplied stream.
+/// <para>
+/// Carries the same metadata as <see cref="AsicCreateResult"/> minus the container bytes,
+/// which by definition were never held in memory — that is the point of the streaming path.
+/// Use <see cref="BytesWritten"/> where you would have read <c>ContainerBytes.Length</c>.
+/// </para>
+/// </summary>
+public sealed class AsicStreamCreateResult
+{
+    /// <summary>The UTC timestamp from the TSA.</summary>
+    public required DateTimeOffset Timestamp { get; init; }
+
+    /// <summary>The hash algorithm used.</summary>
+    public required string HashAlgorithm { get; init; }
+
+    /// <summary>The hex-encoded hash of the original data.</summary>
+    public required string DataHash { get; init; }
+
+    /// <summary>The TSA URL that issued the timestamp.</summary>
+    public required string TimestampAuthorityUrl { get; init; }
+
+    /// <summary>How many bytes of container were written to the output stream.</summary>
+    public required long BytesWritten { get; init; }
+
+    /// <summary>The data file names the container holds, in the order supplied.</summary>
+    public IReadOnlyList<string>? FileNames { get; init; }
+
+    /// <summary>
+    /// Hex-encoded hash per data file, keyed by file name. The single entry equals
+    /// <see cref="DataHash"/> for ASiC-S.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? FileHashes { get; init; }
+}
+
+/// <summary>
 /// Result of verifying an ASiC-S container.
 /// </summary>
 public sealed class AsicVerifyResult
