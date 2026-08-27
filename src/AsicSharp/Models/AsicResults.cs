@@ -82,7 +82,15 @@ public sealed class AsicStreamCreateResult
 /// </summary>
 public sealed class AsicVerifyResult
 {
-    /// <summary>Whether the timestamp and data integrity are valid.</summary>
+    /// <summary>
+    /// Whether every <see cref="VerificationStep"/> passed — cryptographic integrity only.
+    /// <para>
+    /// True means nothing in the container was altered. It does <em>not</em> mean the issuing
+    /// authority is trustworthy: no <c>X509Chain</c> is built for
+    /// <see cref="TsaCertificate"/>, so a self-issued TSA yields a fully valid container. That
+    /// trust decision is deliberately left to the caller.
+    /// </para>
+    /// </summary>
     public required bool IsValid { get; init; }
 
     /// <summary>The UTC timestamp from the TSA, if successfully decoded.</summary>
@@ -91,7 +99,11 @@ public sealed class AsicVerifyResult
     /// <summary>The name of the data file inside the container (first/only file for ASiC-S).</summary>
     public string? FileName { get; init; }
 
-    /// <summary>The raw data bytes extracted from the container (first/only file for ASiC-S).</summary>
+    /// <summary>
+    /// The raw data bytes extracted from the container — the single data file, for ASiC-S.
+    /// <c>null</c> for ASiC-E, whose data files are reached through
+    /// <see cref="AsicSharp.Services.IAsicService.ExtractAll"/>, and null on any early verification failure.
+    /// </summary>
     public byte[]? DataBytes { get; init; }
 
     /// <summary>All data file names inside the container (populated for both ASiC-S and ASiC-E).</summary>
@@ -121,7 +133,11 @@ public sealed class AsicVerifyResult
     /// <summary>Hex-encoded hash of the data file.</summary>
     public string? DataHash { get; init; }
 
-    /// <summary>Error message if verification failed.</summary>
+    /// <summary>
+    /// The <c>"; "</c>-joined <see cref="VerificationStep.Detail"/> of every failing step, or
+    /// <c>null</c> when <see cref="IsValid"/> is true. A diagnostic string, not a stable error
+    /// code — do not parse it.
+    /// </summary>
     public string? Error { get; init; }
 
     /// <summary>Detailed verification steps performed.</summary>
@@ -163,7 +179,23 @@ public sealed class TimestampChainEntry
 /// </summary>
 public sealed class VerificationStep
 {
+    /// <summary>
+    /// What was checked, e.g. <c>"MIME type"</c> or <c>"Data file: contract.pdf"</c>. Step names
+    /// are part of the public contract: tests assert them and <c>asicts verify -v</c> prints them
+    /// verbatim as an audit trail.
+    /// </summary>
     public required string Name { get; init; }
+
+    /// <summary>
+    /// Whether this check passed. <see cref="AsicVerifyResult.IsValid"/> is the conjunction of
+    /// every step, so a single false here makes the whole container invalid — except for
+    /// deliberately informational steps, which always pass and report through a property instead.
+    /// </summary>
     public required bool Passed { get; init; }
+
+    /// <summary>
+    /// Human-readable detail for diagnostics and audit output. A message, not a stable error
+    /// code — do not parse it.
+    /// </summary>
     public string? Detail { get; init; }
 }

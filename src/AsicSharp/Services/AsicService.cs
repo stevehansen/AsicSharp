@@ -25,22 +25,50 @@ public interface IAsicService
     /// <param name="fileName">The filename to use inside the container.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The result containing the container bytes and metadata.</returns>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="data"/> is null or empty, <paramref name="fileName"/> is empty, contains
+    /// a path separator, or collides with a reserved entry name, or the data exceeds
+    /// <see cref="Configuration.AsicTimestampOptions.MaxFileSize"/>.
+    /// </exception>
+    /// <exception cref="TimestampAuthorityException">Every configured TSA URL failed.</exception>
     Task<AsicCreateResult> CreateAsync(
         byte[] data,
         string fileName,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Create an ASiC-S container from a stream.
+    /// Create an ASiC-S container from a stream, buffering it into memory first.
     /// </summary>
+    /// <param name="data">The data to timestamp. Read to its end from the current position.</param>
+    /// <param name="fileName">The filename to use inside the container.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The result containing the container bytes and metadata.</returns>
+    /// <exception cref="ArgumentException">
+    /// The stream is empty, or <paramref name="fileName"/> is invalid, or the data exceeds
+    /// <see cref="Configuration.AsicTimestampOptions.MaxFileSize"/>.
+    /// </exception>
+    /// <exception cref="TimestampAuthorityException">Every configured TSA URL failed.</exception>
+    /// <remarks>
+    /// This overload copies the stream into a byte array, so it saves the caller a read but not
+    /// the memory. Use <see cref="CreateToStreamAsync"/> when the payload is large enough that
+    /// holding it — and the finished container — in memory matters.
+    /// </remarks>
     Task<AsicCreateResult> CreateAsync(
         Stream data,
         string fileName,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Create an ASiC-S container from a file on disk.
+    /// Create an ASiC-S container from a file on disk, using the file's own name inside it.
     /// </summary>
+    /// <param name="filePath">Path to the file to timestamp.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The result containing the container bytes and metadata.</returns>
+    /// <exception cref="FileNotFoundException">No file exists at <paramref name="filePath"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// The file is empty or exceeds <see cref="Configuration.AsicTimestampOptions.MaxFileSize"/>.
+    /// </exception>
+    /// <exception cref="TimestampAuthorityException">Every configured TSA URL failed.</exception>
     Task<AsicCreateResult> CreateFromFileAsync(
         string filePath,
         CancellationToken cancellationToken = default);
@@ -76,7 +104,18 @@ public interface IAsicService
     /// Verify an ASiC-S container and return detailed results.
     /// </summary>
     /// <param name="containerBytes">The raw ASiC-S container bytes.</param>
-    /// <returns>Verification result with details.</returns>
+    /// <returns>
+    /// Verification result with details. <see cref="AsicVerifyResult.IsValid"/> is true only when
+    /// every <see cref="VerificationStep"/> passed; <see cref="AsicVerifyResult.Error"/> then
+    /// joins the details of the failing steps.
+    /// </returns>
+    /// <exception cref="ArgumentException"><paramref name="containerBytes"/> is null or empty.</exception>
+    /// <remarks>
+    /// Never throws for a malformed or tampered container — a corrupt ZIP, a missing entry or an
+    /// undecodable token all come back as a failed result. Verification reports cryptographic
+    /// integrity only: no <c>X509Chain</c> is built for the TSA certificate, so deciding whether
+    /// to trust the issuing authority remains the caller's.
+    /// </remarks>
     AsicVerifyResult Verify(byte[] containerBytes);
 
     /// <summary>
@@ -120,15 +159,29 @@ public interface IAsicService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Verify an ASiC-S container from a file on disk.
+    /// Verify a container read from a file on disk.
     /// </summary>
+    /// <param name="filePath">Path to the container file.</param>
+    /// <returns>Verification result with details, exactly as <see cref="Verify(byte[])"/> reports it.</returns>
+    /// <exception cref="FileNotFoundException">No file exists at <paramref name="filePath"/>.</exception>
+    /// <exception cref="ArgumentException">The file is empty.</exception>
     AsicVerifyResult VerifyFile(string filePath);
 
     /// <summary>
     /// Extract the original data from an ASiC-S container without verification.
     /// </summary>
     /// <param name="containerBytes">The raw ASiC-S container bytes.</param>
-    /// <returns>Tuple of filename and data bytes.</returns>
+    /// <returns>The sanitized file name and the data bytes.</returns>
+    /// <exception cref="InvalidAsicContainerException">
+    /// The container is not a readable ZIP, holds no data file covered by a proof of existence,
+    /// the entry name is unusable, or the entry exceeds
+    /// <see cref="Configuration.AsicTimestampOptions.MaxFileSize"/>.
+    /// </exception>
+    /// <remarks>
+    /// On an ASiC-E container this returns only the first ASiCManifest-referenced data file — use
+    /// <see cref="ExtractAll"/> whenever the profile might be ASiC-E. Extraction does not verify;
+    /// call <see cref="Verify(byte[])"/> if the bytes need to be proven unaltered.
+    /// </remarks>
     (string FileName, byte[] Data) Extract(byte[] containerBytes);
 
     /// <summary>
@@ -137,14 +190,35 @@ public interface IAsicService
     /// </summary>
     /// <param name="files">The files to include, each as a (FileName, Data) tuple.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The result containing the container bytes and metadata.</returns>
+    /// <returns>
+    /// The result containing the container bytes and metadata. Note that
+    /// <see cref="AsicCreateResult.DataHash"/> is the ASiCManifest's hash on this profile, not any
+    /// file's — <see cref="AsicCreateResult.FileHashes"/> carries the per-file hashes.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="files"/> is null.</exception>
+    /// <exception cref="ArgumentException">
+    /// The list is empty, a file name is empty or duplicated or contains a path separator, a
+    /// file's data is empty, or a file exceeds
+    /// <see cref="Configuration.AsicTimestampOptions.MaxFileSize"/>.
+    /// </exception>
+    /// <exception cref="TimestampAuthorityException">Every configured TSA URL failed.</exception>
     Task<AsicCreateResult> CreateExtendedAsync(
         IEnumerable<(string FileName, byte[] Data)> files,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Create an ASiC-E (Extended) container from files on disk.
+    /// Create an ASiC-E (Extended) container from files on disk, using each file's own name.
     /// </summary>
+    /// <param name="filePaths">Paths to the files to include.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The result containing the container bytes and metadata.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="filePaths"/> is null.</exception>
+    /// <exception cref="FileNotFoundException">One of the paths does not exist.</exception>
+    /// <exception cref="ArgumentException">
+    /// No paths were given, two paths share a file name, or a file is empty or exceeds
+    /// <see cref="Configuration.AsicTimestampOptions.MaxFileSize"/>.
+    /// </exception>
+    /// <exception cref="TimestampAuthorityException">Every configured TSA URL failed.</exception>
     Task<AsicCreateResult> CreateExtendedFromFilesAsync(
         IEnumerable<string> filePaths,
         CancellationToken cancellationToken = default);
@@ -153,7 +227,15 @@ public interface IAsicService
     /// Extract all data files from an ASiC container (works for both ASiC-S and ASiC-E).
     /// </summary>
     /// <param name="containerBytes">The raw ASiC container bytes.</param>
-    /// <returns>List of (FileName, Data) tuples for all data files.</returns>
+    /// <returns>
+    /// One (FileName, Data) tuple per data file. On ASiC-E only ASiCManifest-referenced files are
+    /// returned, so a ZIP entry no proof of existence covers is never handed back;
+    /// <see cref="AsicVerifyResult.UnreferencedFileNames"/> reports those instead.
+    /// </returns>
+    /// <exception cref="InvalidAsicContainerException">
+    /// The container is not a readable ZIP, holds no covered data file, an entry name is unusable,
+    /// or an entry exceeds <see cref="Configuration.AsicTimestampOptions.MaxFileSize"/>.
+    /// </exception>
     IReadOnlyList<(string FileName, byte[] Data)> ExtractAll(byte[] containerBytes);
 
     /// <summary>
@@ -162,17 +244,43 @@ public interface IAsicService
     /// </summary>
     /// <param name="containerBytes">The raw ASiC container bytes.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The result containing the updated container bytes and metadata.</returns>
+    /// <returns>
+    /// The result containing the updated container bytes and metadata. On a renewal
+    /// <see cref="AsicCreateResult.DataHash"/> is the hash of the previous *token*, not of any
+    /// data, and <see cref="AsicCreateResult.FileNames"/> and
+    /// <see cref="AsicCreateResult.FileHashes"/> are null — renewal touches no data file.
+    /// </returns>
+    /// <exception cref="ArgumentException"><paramref name="containerBytes"/> is null or empty.</exception>
+    /// <exception cref="InvalidAsicContainerException">
+    /// The container is not a readable ZIP or carries no timestamp token to renew.
+    /// </exception>
+    /// <exception cref="TimestampAuthorityException">Every configured TSA URL failed.</exception>
     Task<AsicCreateResult> RenewAsync(byte[] containerBytes, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Renew the timestamp on an existing ASiC container from a stream.
+    /// Renew the timestamp on an existing ASiC container read from a stream.
     /// </summary>
+    /// <param name="container">The container to renew. Read to its end from the current position.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The result containing the updated container bytes and metadata.</returns>
+    /// <exception cref="ArgumentException">The stream is empty.</exception>
+    /// <exception cref="InvalidAsicContainerException">
+    /// The container is not a readable ZIP or carries no timestamp token to renew.
+    /// </exception>
+    /// <exception cref="TimestampAuthorityException">Every configured TSA URL failed.</exception>
     Task<AsicCreateResult> RenewAsync(Stream container, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Renew the timestamp on an existing ASiC container file, writing the result back to disk.
+    /// Renew the timestamp on an existing ASiC container file, rewriting it in place.
     /// </summary>
+    /// <param name="filePath">Path to the container file. Overwritten with the renewed container.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The result containing the updated container bytes and metadata.</returns>
+    /// <exception cref="FileNotFoundException">No file exists at <paramref name="filePath"/>.</exception>
+    /// <exception cref="InvalidAsicContainerException">
+    /// The file is not a readable ZIP or carries no timestamp token to renew.
+    /// </exception>
+    /// <exception cref="TimestampAuthorityException">Every configured TSA URL failed.</exception>
     Task<AsicCreateResult> RenewFileAsync(string filePath, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -180,7 +288,15 @@ public interface IAsicService
     /// This is a lightweight check that does not perform full verification.
     /// </summary>
     /// <param name="containerBytes">The raw container bytes.</param>
-    /// <returns>The detected container type.</returns>
+    /// <returns>
+    /// The detected container type, or <see cref="AsicContainerType.None"/> for anything this
+    /// library does not recognize.
+    /// </returns>
+    /// <remarks>
+    /// Never throws: null, empty and malformed input all return
+    /// <see cref="AsicContainerType.None"/>. Detection is by mimetype and then ASiCManifest
+    /// presence — never by file extension — and manifest presence outranks a wrong mimetype.
+    /// </remarks>
     AsicContainerType GetContainerType(byte[] containerBytes);
 }
 

@@ -11,8 +11,12 @@ namespace AsicSharp.Extensions;
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Add ASiC timestamp services to the DI container with default options (DigiCert TSA, SHA-256).
+    /// Add ASiC timestamp services to the DI container with default options: the DigiCert TSA,
+    /// SHA-256, a 30-second timeout, nonce and signer-certificate requests on, and a 10 MB
+    /// per-file limit.
     /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <returns>The same service collection, for chaining.</returns>
     public static IServiceCollection AddAsicSharp(this IServiceCollection services)
     {
         return services.AddAsicSharp(_ => { });
@@ -23,6 +27,7 @@ public static class ServiceCollectionExtensions
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="configure">Action to configure <see cref="AsicTimestampOptions"/>.</param>
+    /// <returns>The same service collection, for chaining.</returns>
     public static IServiceCollection AddAsicSharp(
         this IServiceCollection services,
         Action<AsicTimestampOptions> configure)
@@ -47,7 +52,10 @@ public static class ServiceCollectionExtensions
     /// Add ASiC timestamp services using configuration binding (e.g., from appsettings.json).
     /// </summary>
     /// <param name="services">The service collection.</param>
-    /// <param name="configurationSection">The configuration section to bind.</param>
+    /// <param name="configurationSection">
+    /// The configuration section to bind, conventionally <see cref="AsicTimestampOptions.SectionName"/>.
+    /// </param>
+    /// <returns>The same service collection, for chaining.</returns>
     public static IServiceCollection AddAsicSharp(
         this IServiceCollection services,
         Microsoft.Extensions.Configuration.IConfigurationSection configurationSection)
