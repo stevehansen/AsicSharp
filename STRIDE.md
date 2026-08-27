@@ -1,4 +1,4 @@
-﻿# AsicSharp - STRIDE Threat Model
+# AsicSharp - STRIDE Threat Model
 
 **Version:** 1.6
 **Created:** 2026-02-28

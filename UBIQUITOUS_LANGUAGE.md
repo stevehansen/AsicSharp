@@ -1,4 +1,4 @@
-﻿# Ubiquitous Language
+# Ubiquitous Language
 
 The agreed vocabulary for ASiC containers and RFC 3161 timestamping. Use these terms in code, XML doc comments, CLI output, and README prose.
 

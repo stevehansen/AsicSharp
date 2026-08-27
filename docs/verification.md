@@ -1,4 +1,4 @@
-﻿# Verification
+# Verification
 
 Inspecting a container and reporting, check by check, whether its bytes are unaltered — and nothing more than that.
 

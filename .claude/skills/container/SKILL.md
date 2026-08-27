@@ -1,4 +1,4 @@
-﻿---
+---
 name: container
 description: Prime on the AsicSharp Container domain before working on it — the ETSI ZIP layout, ASiC-S vs ASiC-E, the mimetype and META-INF entries, ASiCManifest construction, extraction, and GetContainerType format probing. Use when the task touches container structure, BuildContainer/BuildExtendedContainer/BuildAsicManifest, Extract/ExtractAll, entry names, MaxFileSize, Zip Slip, the CAdES signature entry, or the stamp/extract CLI commands. Not for the TSA request itself (see timestamping), the pass/fail verdict (see verification), or archive timestamps (see renewal).
 ---

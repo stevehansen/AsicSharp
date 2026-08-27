@@ -1,4 +1,4 @@
-﻿# Container
+# Container
 
 The ASiC container itself — what a conformant ZIP looks like, how ASiC-S and ASiC-E differ, and how files get in and out of one.
 
