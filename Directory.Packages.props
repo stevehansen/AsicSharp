@@ -15,7 +15,7 @@
     <PackageVersion Include="PolySharp" Version="1.16.0" />
     <!-- Build/versioning -->
     <PackageVersion Include="MinVer" Version="7.0.0" />
-    <PackageVersion Include="ThisAssembly.AssemblyInfo" Version="2.1.2" />
+    <PackageVersion Include="ThisAssembly.AssemblyInfo" Version="2.1.5" />
     <PackageVersion Include="ThisAssembly.Git" Version="2.1.2" />
     <!-- CLI -->
     <PackageVersion Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
