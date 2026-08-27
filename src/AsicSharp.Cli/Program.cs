@@ -106,7 +106,21 @@ internal static class Program
                 File.WriteAllBytes(outputPath, result.ContainerBytes);
 
                 Console.WriteLine($"✓ Timestamp:  {result.Timestamp:O}");
-                Console.WriteLine($"  Hash:       {result.DataHash}");
+
+                // For ASiC-E, DataHash is the manifest's hash, not any file's — so name it
+                // that way and list the per-file hashes the manifest actually recorded.
+                if (isExtended && result.FileNames is not null && result.FileHashes is not null)
+                {
+                    Console.WriteLine($"  Files:");
+                    foreach (var name in result.FileNames)
+                        Console.WriteLine($"    {name}  {result.FileHashes[name]}");
+                    Console.WriteLine($"  Manifest:   {result.DataHash}");
+                }
+                else
+                {
+                    Console.WriteLine($"  Hash:       {result.DataHash}");
+                }
+
                 Console.WriteLine($"  Output:     {outputPath}");
                 Console.WriteLine($"  Size:       {result.ContainerBytes.Length:N0} bytes");
             }

@@ -1,4 +1,4 @@
-# Renewal
+﻿# Renewal
 
 Extending a container's proof of existence by adding an archive timestamp over the newest token, before its algorithms or certificates weaken.
 
@@ -49,7 +49,7 @@ data file (ASiC-S)  ──covered by──▶ token₁  ──covered by──�
 
 - **The chain loop is duplicated between `Verify` and `VerifyExtended`**, differing only in the seed bytes (data file vs. manifest) and two step labels. Fix one, fix the other — ordering is now hoisted into `GetTimestampEntriesInChainOrder`, but everything else in the loop is still copied.
 - **`asicts renew` overwrites the input file.** `RenewFileAsync` reads, then `File.WriteAllBytes` to the same path. No backup, no `--output`. A failed TSA call leaves the original intact only because the write happens after the call returns.
-- **`AsicCreateResult.DataHash` from a renewal is the hash of the previous *token*, not of the data.** Same property, different subject — the CLI labels it "Token hash" for exactly this reason.
+- **`AsicCreateResult.DataHash` from a renewal is the hash of the previous *token*, not of the data.** Same property, different subject — the CLI labels it "Token hash" for exactly this reason. `FileNames` and `FileHashes` are null on a renewal result for the same reason: renewal adds a token and touches no data file.
 - **Containers grow by one entry per renewal, forever.** Small (~2–4 KB each) and tracked as D-4 in [`STRIDE.md`](../STRIDE.md), but there is no pruning and no upper bound.
 - **A renewed ASiC-S container's `Extract` still works**, because extraction ignores `META-INF` entirely — renewal never touches the data file.
 

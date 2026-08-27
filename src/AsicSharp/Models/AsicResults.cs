@@ -21,6 +21,25 @@ public sealed class AsicCreateResult
 
     /// <summary>The TSA URL that issued the timestamp.</summary>
     public required string TimestampAuthorityUrl { get; init; }
+
+    /// <summary>
+    /// The data file names the container holds, in the order supplied — one entry for
+    /// ASiC-S, one per file for ASiC-E. <c>null</c> after a renewal, which adds a
+    /// timestamp token without touching any data file.
+    /// </summary>
+    public IReadOnlyList<string>? FileNames { get; init; }
+
+    /// <summary>
+    /// Hex-encoded hash per data file, keyed by file name. For ASiC-E these are exactly
+    /// the digests written into the ASiCManifest; for ASiC-S the single entry equals
+    /// <see cref="DataHash"/>. <c>null</c> after a renewal.
+    /// <para>
+    /// Unlike <see cref="DataHash"/> — which is the data file's hash for ASiC-S but the
+    /// <em>manifest's</em> hash for ASiC-E — this always means the same thing, so a caller
+    /// recording per-file proof need not branch on the container profile.
+    /// </para>
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? FileHashes { get; init; }
 }
 
 /// <summary>
