@@ -12,7 +12,8 @@ Reporting, check by check, whether a container's bytes are unaltered — and not
 ## Core invariants (get these right)
 
 - **`Verify` reports, it does not throw.** Every failure becomes a failed `VerificationStep`. The only throws are `ArgumentException` on null/empty bytes and `FileNotFoundException` from `VerifyFile`.
-- **`IsValid` = every step passed.** So **adding a step makes containers that verify today invalid** — treat any new step as a breaking change.
+- **`IsValid` = every step passed.** So **adding a *failable* step makes containers that verify today invalid** — treat one as a breaking change.
+- **`Manifest completeness` is deliberately always-passing.** It reports ASiC-E ZIP entries with no manifest reference via `AsicVerifyResult.UnreferencedFileNames` without moving the verdict, because failing it would invalidate third-party containers that legitimately carry extra entries. It is the only informational step — if you add another, record it here.
 - **`Error` is the `"; "`-joined details of failing steps** — a diagnostic string, never parse it.
 - **The verifying hash algorithm comes from the token's OID, never from options.** Unrecognized OIDs throw and become an invalid result.
 - **Never a trust decision: no `X509Chain` is built for the TSA cert.** A self-issued TSA yields `IsValid = true`. Say "unaltered" / "cryptographically valid", never "trusted".
@@ -30,7 +31,7 @@ Reporting, check by check, whether a container's bytes are unaltered — and not
 
 - **`DataHash` and `HashAlgorithm` can disagree on the same result** — `DataHash` is recomputed with `options.HashAlgorithm` while `HashAlgorithm` comes from the token. A SHA-512 container yields a SHA-256 hex labelled "SHA512".
 - **`DataBytes` is ASiC-S only** — null for a valid ASiC-E container.
-- **No ASiC-E completeness check** — a ZIP data file absent from the manifest is never verified nor reported, and the container still reports valid; `ExtractAll` returns it anyway. Open: `STRIDE.md` T-9, #25.
+- **ASiC-E completeness is reported, not enforced** — an unreferenced ZIP data entry is still never hashed, but it is named in `UnreferencedFileNames` and excluded from `ExtractAll`. `IsValid` ignores it by design; enforce "every byte covered" yourself. Null (not empty) for ASiC-S. Partially mitigated: `STRIDE.md` T-9, #25.
 - **`FailResult` returns a truncated `Steps` list** on early exit; length is not fixed.
 - **Unit tests cannot reach token decode** (non-DER placeholder tokens), so signature and hash-match verification is integration-only — and CI runs integration `continue-on-error: true`.
 

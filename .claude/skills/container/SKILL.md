@@ -28,8 +28,8 @@ The container as a *structure*: ETSI ZIP layout, the two profiles, manifest cons
 
 ## Gotchas
 
-- **`Extract` on ASiC-E returns only the first data file** (asserted, intended). Use `ExtractAll` when the profile is unknown.
-- **`ExtractAll` walks ZIP entries, not the manifest** — it returns files the manifest never listed and the proof never covered. Pairs badly with verification's missing completeness check.
+- **`Extract` on ASiC-E returns only the first *manifest-referenced* data file** (asserted, intended). Use `ExtractAll` when the profile is unknown.
+- **`Extract` and `ExtractAll` filter ASiC-E through the manifest** (shared `FindCoveredDataEntries`) — only referenced files come back, so neither can hand out uncovered bytes, and `Extract` no longer depends on attacker-chosen ZIP order. Falls back to every data entry when the manifest is unparseable; ASiC-S is unfiltered (no manifest). See `UnreferencedFileNames` on the verify side.
 - **Nothing enforces one data file for ASiC-S on read.**
 - **`.asics`/`.asice` is a CLI default only** — no code reads the extension; detection is mimetype-then-manifest, and manifest presence wins.
 - **`AsicCreateResult.DataHash` is the data's hash for ASiC-S but the manifest's for ASiC-E.**

@@ -43,6 +43,18 @@ public sealed class AsicVerifyResult
     /// <summary>All data file names inside the container (populated for both ASiC-S and ASiC-E).</summary>
     public IReadOnlyList<string>? FileNames { get; init; }
 
+    /// <summary>
+    /// Names of ZIP entries that sit where a data file would but carry no ASiCManifest
+    /// reference, and so fall outside the container's proof of existence. Empty when
+    /// every entry is referenced; <c>null</c> for ASiC-S, which has no manifest.
+    /// <para>
+    /// Reported for information only — unreferenced entries do not affect
+    /// <see cref="IsValid"/>. A caller that requires every byte in the container to be
+    /// covered must treat a non-empty list as a failure itself.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string>? UnreferencedFileNames { get; init; }
+
     /// <summary>The TSA certificate that signed the timestamp, if available.</summary>
     public X509Certificate2? TsaCertificate { get; init; }
 
