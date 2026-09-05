@@ -14,7 +14,7 @@
     <!-- netstandard2.0 polyfills -->
     <PackageVersion Include="PolySharp" Version="1.16.0" />
     <!-- Build/versioning -->
-    <PackageVersion Include="MinVer" Version="7.0.0" />
+    <PackageVersion Include="MinVer" Version="8.0.0" />
     <PackageVersion Include="ThisAssembly.AssemblyInfo" Version="2.1.5" />
     <PackageVersion Include="ThisAssembly.Git" Version="2.1.5" />
     <!-- CLI -->
